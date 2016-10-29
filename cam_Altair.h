@@ -35,7 +35,7 @@
 #define CAM_Altair_H_INCLUDED
 
 #include "camera.h"
-#include "cameras/AltairCamera.h"
+#include "cameras/altaircamsdk.h"
 
 class Camera_Altair : public GuideCamera
 {
@@ -44,9 +44,10 @@ class Camera_Altair : public GuideCamera
     bool m_capturing;
     int m_minGain;
     int m_maxGain;
-	HAltair m_handle;
-	volatile bool m_frameReady;
-
+    double m_devicePixelSize;
+	HAltairCam m_handle;
+    volatile bool m_frameReady;
+    bool ReduceResolution;
 public:
     Camera_Altair();
     ~Camera_Altair();
@@ -59,13 +60,16 @@ public:
     bool    ST4PulseGuideScope(int direction, int duration);
     void    ClearGuidePort();
 
-	void	FrameReady();
+    void    FrameReady();
+    void    ShowPropertyDialog();
 
-    virtual bool HasNonGuiCapture(void) { return true; }
-    virtual bool ST4HasNonGuiMove(void) { return true; }
+    bool HasNonGuiCapture() { return true; }
+    bool ST4HasNonGuiMove() { return true; }
+    wxByte BitsPerPixel();
+    bool GetDevicePixelSize(double *devPixelSize);
 
 private:
-    bool StopCapture(void);
+    bool StopCapture();
 };
 
 #endif

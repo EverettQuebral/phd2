@@ -194,13 +194,23 @@ void GuidingLog::Close(void)
     }
 }
 
-static const char *PierSideStr(PierSide p, const char *unknown = _("Unknown"))
+static wxString PierSideStr(PierSide p)
 {
     switch (p)
     {
-    case PIER_SIDE_EAST: return _("East");
-    case PIER_SIDE_WEST: return _("West");
-    default:             return _("Unknown");
+    case PIER_SIDE_EAST: return "East";
+    case PIER_SIDE_WEST: return "West";
+    default:             return "Unknown";
+    }
+}
+
+static wxString ParityStr(int p)
+{
+    switch (p)
+    {
+    case GUIDE_PARITY_EVEN: return "Even";
+    case GUIDE_PARITY_ODD:  return "Odd";
+    default:                return "N/A";
     }
 }
 
@@ -220,7 +230,7 @@ static wxString RotatorPosStr(void)
         return wxString::Format("%.1f", norm(pos, 0.0, 360.0));
 }
 
-static wxString PointingInfo(void)
+static wxString PointingInfo()
 {
     double cur_ra, cur_dec, cur_st;
     if (pPointingSource && !pPointingSource->GetCoordinates(&cur_ra, &cur_dec, &cur_st))
@@ -266,11 +276,12 @@ void GuidingLog::StartCalibration(Mount *pCalibrationMount)
 
     m_file.Write(wxString::Format("%s\n", PointingInfo()));
 
-    m_file.Write(wxString::Format("Lock position = %.3f, %.3f, Star position = %.3f, %.3f\n",
+    m_file.Write(wxString::Format("Lock position = %.3f, %.3f, Star position = %.3f, %.3f, HFD = %.2f px\n",
                 pFrame->pGuider->LockPosition().X,
                 pFrame->pGuider->LockPosition().Y,
                 pFrame->pGuider->CurrentPosition().X,
-                pFrame->pGuider->CurrentPosition().Y));
+                pFrame->pGuider->CurrentPosition().Y,
+                pFrame->pGuider->HFD()));
     m_file.Write("Direction,Step,dx,dy,x,y,Dist\n");
     Flush();
 
@@ -306,14 +317,14 @@ void GuidingLog::CalibrationStep(Mount *pCalibrationMount, const wxString& direc
     Flush();
 }
 
-void GuidingLog::CalibrationDirectComplete(Mount *pCalibrationMount, const wxString& direction, double angle, double rate)
+void GuidingLog::CalibrationDirectComplete(Mount *pCalibrationMount, const wxString& direction, double angle, double rate, int parity)
 {
     if (!m_enabled)
         return;
 
     assert(m_file.IsOpened());
-    m_file.Write(wxString::Format("%s calibration complete. Angle = %.1f deg, Rate = %.3f\n",
-        direction, degrees(angle), rate * 1000.0));
+    m_file.Write(wxString::Format("%s calibration complete. Angle = %.1f deg, Rate = %.3f px/sec, Parity = %s\n",
+        direction, degrees(angle), rate * 1000.0, ParityStr(parity)));
     Flush();
 }
 
@@ -379,11 +390,12 @@ void GuidingLog::GuidingHeader(void)
 
     m_file.Write(wxString::Format("%s\n", PointingInfo()));
 
-    m_file.Write(wxString::Format("Lock position = %.3f, %.3f, Star position = %.3f, %.3f\n",
+    m_file.Write(wxString::Format("Lock position = %.3f, %.3f, Star position = %.3f, %.3f, HFD = %.2f px\n",
                 pFrame->pGuider->LockPosition().X,
                 pFrame->pGuider->LockPosition().Y,
                 pFrame->pGuider->CurrentPosition().X,
-                pFrame->pGuider->CurrentPosition().Y));
+                pFrame->pGuider->CurrentPosition().Y,
+                pFrame->pGuider->HFD()));
 
     m_file.Write("Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,XStep,YStep,StarMass,SNR,ErrorCode\n");
 
@@ -400,8 +412,8 @@ void GuidingLog::GuideStep(const GuideStepInfo& step)
     m_file.Write(wxString::Format("%d,%.3f,\"%s\",%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,",
         step.frameNumber, step.time,
         step.mount->IsStepGuider() ? "AO" : "Mount",
-        step.cameraOffset->X, step.cameraOffset->Y,
-        step.mountOffset->X, step.mountOffset->Y,
+        step.cameraOffset.X, step.cameraOffset.Y,
+        step.mountOffset.X, step.mountOffset.Y,
         step.guideDistanceRA, step.guideDistanceDec));
 
     if (step.mount->IsStepGuider())
@@ -452,6 +464,13 @@ void GuidingLog::NotifySettlingStateChange(const wxString& msg)
     Flush();
 }
 
+void GuidingLog::NotifyGAResult(const wxString& msg)
+{
+    // Client needs to handle end-of-line formatting
+    m_file.Write(wxString::Format("INFO: GA Result - %s", msg));
+    Flush();
+}
+
 void GuidingLog::NotifySetLockPosition(Guider *guider)
 {
     if (!m_enabled || !m_isGuiding)
@@ -496,22 +515,17 @@ void GuidingLog::ServerCommand(Guider *guider, const wxString& cmd)
 
 void GuidingLog::SetGuidingParam(const wxString& name, double val)
 {
-    if (!m_enabled || !m_isGuiding)
-        return;
-
-    m_file.Write(wxString::Format("INFO: Guiding parameter change, %s = %.2f\n", name, val));
-    m_keepFile = true;
-    Flush();
+    SetGuidingParam(name, wxString::Format("%.2f", val));
 }
 
 void GuidingLog::SetGuidingParam(const wxString& name, int val)
 {
-    if (!m_enabled || !m_isGuiding)
-        return;
+    SetGuidingParam(name, wxString::Format("%d", val));
+}
 
-    m_file.Write(wxString::Format("INFO: Guiding parameter change, %s = %d\n", name, val));
-    m_keepFile = true;
-    Flush();
+void GuidingLog::SetGuidingParam(const wxString& name, bool val)
+{
+    SetGuidingParam(name, wxString(val ? "true" : "false"));
 }
 
 void GuidingLog::SetGuidingParam(const wxString& name, const wxString& val)

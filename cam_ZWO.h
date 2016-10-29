@@ -46,6 +46,8 @@ class Camera_ZWO : public GuideCamera
     int m_cameraId;
     int m_minGain;
     int m_maxGain;
+    bool m_isColor;
+    double m_devicePixelSize;
 
 public:
     Camera_ZWO();
@@ -59,8 +61,13 @@ public:
     bool    ST4PulseGuideScope(int direction, int duration);
     void    ClearGuidePort();
 
-    virtual bool HasNonGuiCapture(void) { return true; }
-    virtual bool ST4HasNonGuiMove(void) { return true; }
+    bool HasNonGuiCapture() { return true; }
+    bool ST4HasNonGuiMove() { return true; }
+    wxByte BitsPerPixel();
+    virtual bool    GetDevicePixelSize(double* devPixelSize);
+	virtual bool    SetCoolerOn(bool on);
+	virtual bool    SetCoolerSetpoint(double temperature);
+	virtual bool    GetCoolerStatus(bool *on, double *setpoint, double *power, double *temperature);
 
 private:
     bool StopCapture(void);

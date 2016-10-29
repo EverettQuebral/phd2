@@ -59,6 +59,12 @@ Camera_WDMClass::Camera_WDMClass()
     m_pVidCap = NULL;
 }
 
+wxByte Camera_WDMClass::BitsPerPixel()
+{
+    // individual frames are 8-bit, but stacking can use up to 16-bits
+    return 16;
+}
+
 bool Camera_WDMClass::CaptureCallback(CVRES status, CVImage* imagePtr, void* userParam)
 {
     Camera_WDMClass* cam = (Camera_WDMClass*)userParam;
@@ -79,10 +85,13 @@ bool Camera_WDMClass::CaptureCallback(CVRES status, CVImage* imagePtr, void* use
         int npixels = cam->FullSize.GetWidth() * cam->FullSize.GetHeight();
         unsigned short *dptr = cam->m_stackptr;
 
-        for (i=0; i<npixels; i++, dptr++)
+        for (i = 0; i < npixels; i++, dptr++)
         {
             unsigned short pixelValue = *imgdata++;
-            *dptr = *dptr + pixelValue;
+            unsigned int newval = (unsigned int) *dptr + pixelValue;
+            if (newval > 65535)
+                newval = 65535;
+            *dptr = (unsigned short) newval;
             sum += pixelValue;
         }
 
@@ -182,8 +191,8 @@ bool Camera_WDMClass::SelectDeviceAndMode()
             CVVidCapture::VIDCAP_MODE modeInfo;
             if (CVSUCCESS(vidCap->GetModeInfo(curmode, modeInfo)))
             {
-                modeNames.Add(wxString::Format("%dx%d (%s)", modeInfo.XRes, modeInfo.YRes,
-                    vidCap->GetFormatModeName(modeInfo.InputFormat)));
+                modeNames.Add(wxString::Format("%dx%d (%s) %d fps", modeInfo.XRes, modeInfo.YRes,
+                    vidCap->GetFormatModeName(modeInfo.InputFormat), modeInfo.EstFrameRate));
             }
         }
 
@@ -297,7 +306,7 @@ bool Camera_WDMClass::Connect(const wxString& camId)
             throw ERROR_INFO("StartImageCap() failed");
         }
 
-        pFrame->SetStatusText(wxString::Format("%d x %d mode activated",modeInfo.XRes, modeInfo.YRes),1);
+        pFrame->StatusMsg(wxString::Format("%d x %d mode activated", modeInfo.XRes, modeInfo.YRes));
 
         Connected = true;
     }
@@ -412,7 +421,7 @@ bool Camera_WDMClass::Capture(int duration, usImage& img, int options, const wxR
 
         EndCapture();
 
-        pFrame->SetStatusText(wxString::Format("%d frames", m_nFrames),1);
+        pFrame->StatusMsg(wxString::Format("%d frames", m_nFrames));
 
         if (options & CAPTURE_SUBTRACT_DARK)
         {

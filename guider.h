@@ -97,13 +97,6 @@ struct OverlaySlitCoords
     wxPoint corners[5];
 };
 
-enum MOVE_LOCK_RESULT
-{
-    MOVE_LOCK_OK,
-    MOVE_LOCK_REJECTED,
-    MOVE_LOCK_ERROR,
-};
-
 enum PauseType
 {
     PAUSE_NONE,     // not paused
@@ -206,7 +199,7 @@ protected:
     Guider(wxWindow *parent, int xSize, int ySize);
     virtual ~Guider(void);
 
-    bool PaintHelper(wxClientDC &dc, wxMemoryDC &memDC);
+    bool PaintHelper(wxAutoBufferedPaintDCBase& dc, wxMemoryDC& memDC);
     void SetState(GUIDER_STATE newState);
     void UpdateCurrentDistance(double distance);
 
@@ -224,7 +217,7 @@ public:
     void OnErase(wxEraseEvent& evt);
     void UpdateImageDisplay(usImage *pImage=NULL);
 
-    MOVE_LOCK_RESULT MoveLockPosition(const PHD_Point& mountDelta);
+    bool MoveLockPosition(const PHD_Point& mountDelta);
     bool SetLockPosition(const PHD_Point& position);
     bool SetLockPosToStarAtPosition(const PHD_Point& starPositionHint);
     bool ShiftLockPosition(void);
@@ -292,7 +285,9 @@ public:
     virtual wxRect GetBoundingBox(void) = 0;
     virtual int GetMaxMovePixels(void) = 0;
     virtual double StarMass(void) = 0;
+    virtual unsigned int StarPeakADU(void) = 0;
     virtual double SNR(void) = 0;
+    virtual double HFD(void) = 0;
     virtual int StarError(void) = 0;
 
     usImage *CurrentImage(void);
@@ -319,14 +314,69 @@ inline PauseType Guider::GetPauseType(void) const
     return m_paused;
 }
 
+inline bool Guider::GetScaleImage(void)
+{
+    return m_scaleImage;
+}
+
+inline const PHD_Point& Guider::LockPosition()
+{
+    return m_lockPosition;
+}
+
+inline GUIDER_STATE Guider::GetState(void)
+{
+    return m_state;
+}
+
 inline bool Guider::IsGuiding(void) const
 {
     return m_state == STATE_GUIDING;
 }
 
+inline bool Guider::IsCalibratingOrGuiding(void)
+{
+    return m_state >= STATE_CALIBRATING_PRIMARY && m_state <= STATE_GUIDING;
+}
+
 inline int Guider::GetSearchRegion(void) const
 {
     return m_searchRegion;
+}
+
+inline bool Guider::IsFastRecenterEnabled(void)
+{
+    return m_fastRecenterEnabled;
+}
+
+inline double Guider::GetPolarAlignCircleCorrection(void)
+{
+    return m_polarAlignCircleCorrection;
+}
+
+inline void Guider::SetPolarAlignCircleCorrection(double val)
+{
+    m_polarAlignCircleCorrection = val;
+}
+
+inline usImage *Guider::CurrentImage(void)
+{
+    return m_pCurrentImage;
+}
+
+inline wxImage *Guider::DisplayedImage(void)
+{
+    return m_displayedImage;
+}
+
+inline double Guider::ScaleFactor(void)
+{
+    return m_scaleFactor;
+}
+
+inline bool Guider::GetBookmarksShown(void)
+{
+    return m_showBookmarks;
 }
 
 #endif /* GUIDER_H_INCLUDED */

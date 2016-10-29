@@ -84,14 +84,25 @@ public:
     virtual double result(double input) = 0;
     virtual double deduceResult(void) { return 0.0; }
 
+    virtual void GuidingStopped(void);
+    virtual void GuidingPaused(void);
+    virtual void GuidingResumed(void);
+    virtual void GuidingDithered(double amt);
+    virtual void GuidingDitherSettleDone(bool success);
+
     virtual ConfigDialogPane *GetConfigDialogPane(wxWindow *pParent) = 0;
     virtual GraphControlPane *GetGraphControlPane(wxWindow *pParent, const wxString& label) { return 0; };
     virtual wxString GetSettingsSummary() { return wxEmptyString; }
     virtual wxString GetGuideAlgorithmClassName(void) const = 0;
+    virtual void GetParamNames(wxArrayString& names) const;
+    virtual bool GetParam(const wxString& name, double *val);
+    virtual bool SetParam(const wxString& name, double val);
     virtual double GetMinMove(void) { return -1.0; };
     virtual bool SetMinMove(double minMove) { return true; };       // true indicates error
     wxString GetConfigPath();
     wxString GetAxis();
+    virtual void ResetParams();     // Override if fine-tuned logic is needed by a particular algo
+    static double SmartDefaultMinMove();
 };
 
 #endif /* GUIDE_ALGORITHM_H_INCLUDED */

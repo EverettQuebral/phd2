@@ -68,6 +68,8 @@ struct ControllerState
     bool settlePriorFrameInRange;
     wxStopWatch *settleTimeout;
     wxStopWatch *settleInRange;
+    int settleFrameCount;
+    int droppedFrameCount;
     bool succeeded;
     wxString errorMsg;
 };
@@ -102,7 +104,7 @@ bool PhdController::Guide(bool recalibrate, const SettleParams& settle, wxString
 {
     if (ctrl.state != STATE_IDLE)
     {
-        Debug.AddLine("PhdController::Guide reentrancy state = %d op = %d", ctrl.state, ctrl.settleOp);
+        Debug.Write(wxString::Format("PhdController::Guide reentrancy state = %d op = %d\n", ctrl.state, ctrl.settleOp));
         *error = ReentrancyError("guide");
         return false;
     }
@@ -128,7 +130,7 @@ bool PhdController::Dither(double pixels, bool raOnly, const SettleParams& settl
 {
     if (ctrl.state != STATE_IDLE)
     {
-        Debug.AddLine("PhdController::Dither reentrancy state = %d op = %d", ctrl.state, ctrl.settleOp);
+        Debug.Write(wxString::Format("PhdController::Dither reentrancy state = %d op = %d\n", ctrl.state, ctrl.settleOp));
         *errMsg = ReentrancyError("dither");
         return false;
     }
@@ -149,6 +151,27 @@ bool PhdController::Dither(double pixels, bool raOnly, const SettleParams& settl
     UpdateControllerState();
 
     return true;
+}
+
+bool PhdController::Dither(double pixels, bool raOnly, int settleFrames, wxString *errMsg)
+{
+    SettleParams settle;
+
+    settle.tolerancePx = 99.;
+    settle.settleTimeSec = 9999;
+    settle.timeoutSec = 9999;
+    settle.frames = settleFrames;
+
+    return Dither(pixels, raOnly, settle, errMsg);
+}
+
+bool PhdController::DitherCompat(double pixels, bool raOnly, wxString *errMsg)
+{
+    AbortController("manual or phd1-style dither");
+
+    enum { SETTLE_FRAMES = 10 };
+
+    return Dither(pixels, raOnly, SETTLE_FRAMES, errMsg);
 }
 
 void PhdController::AbortController(const wxString& reason)
@@ -172,15 +195,18 @@ static void do_notify(void)
     if (ctrl.succeeded)
     {
         Debug.AddLine("PhdController complete: success");
-        EvtServer.NotifySettleDone(wxEmptyString);
+        EvtServer.NotifySettleDone(wxEmptyString, ctrl.settleFrameCount, ctrl.droppedFrameCount);
         GuideLog.NotifySettlingStateChange("Settling complete");
     }
     else
     {
-        Debug.AddLine(wxString::Format("PHDController complete: fail: %s", ctrl.errorMsg));
-        EvtServer.NotifySettleDone(ctrl.errorMsg);
+        Debug.AddLine(wxString::Format("PhdController complete: fail: %s", ctrl.errorMsg));
+        EvtServer.NotifySettleDone(ctrl.errorMsg, ctrl.settleFrameCount, ctrl.droppedFrameCount);
         GuideLog.NotifySettlingStateChange("Settling failed");
     }
+
+    if (pMount)
+        pMount->NotifyGuidingDitherSettleDone(ctrl.succeeded);
 }
 
 static bool start_capturing(void)
@@ -209,6 +235,16 @@ static bool IsAoBumpInProgress()
     return pMount && pMount->IsStepGuider() && static_cast<StepGuider *>(pMount)->IsBumpInProgress();
 }
 
+bool PhdController::CanGuide(wxString *error)
+{
+    if (!all_gear_connected())
+    {
+        *error = _T("all equipment must be connected first");
+        return false;
+    }
+    return true;
+}
+
 void PhdController::UpdateControllerState(void)
 {
     bool done = false;
@@ -227,16 +263,19 @@ void PhdController::UpdateControllerState(void)
             SETSTATE(STATE_ATTEMPT_START);
             break;
 
-        case STATE_ATTEMPT_START:
+        case STATE_ATTEMPT_START: {
 
-            if (!all_gear_connected())
+            wxString err;
+
+            if (!CanGuide(&err))
             {
-                do_fail(_T("all equipment must be connected first"));
+                Debug.Write(wxString::Format("PhdController: not ready: %s\n", err));
+                do_fail(err);
             }
             else if (pFrame->pGuider->IsCalibratingOrGuiding())
             {
                 GUIDER_STATE state = pFrame->pGuider->GetState();
-                Debug.AddLine("PhdController: guider state = %d", state);
+                Debug.Write(wxString::Format("PhdController: guider state = %d\n", state));
                 if (state == STATE_CALIBRATED || state == STATE_GUIDING)
                 {
                     SETSTATE(STATE_SETTLE_BEGIN);
@@ -276,12 +315,13 @@ void PhdController::UpdateControllerState(void)
                 }
             }
             break;
+        }
 
         case STATE_SELECT_STAR: {
             bool error = pFrame->pGuider->AutoSelect();
             if (error)
             {
-                Debug.AddLine("auto find star failed, attempts remaining = %d", ctrl.autoFindAttemptsRemaining);
+                Debug.Write(wxString::Format("auto find star failed, attempts remaining = %d\n", ctrl.autoFindAttemptsRemaining));
                 if (--ctrl.autoFindAttemptsRemaining == 0)
                 {
                     do_fail(_T("failed to find a suitable guide star"));
@@ -309,7 +349,7 @@ void PhdController::UpdateControllerState(void)
             }
             else
             {
-                Debug.AddLine("waiting for star selected, attempts remaining = %d", ctrl.waitSelectedRemaining);
+                Debug.Write(wxString::Format("waiting for star selected, attempts remaining = %d\n", ctrl.waitSelectedRemaining));
                 if (--ctrl.waitSelectedRemaining == 0)
                 {
                     SETSTATE(STATE_ATTEMPT_START);
@@ -378,6 +418,7 @@ void PhdController::UpdateControllerState(void)
 
         case STATE_SETTLE_BEGIN:
             ctrl.settlePriorFrameInRange = false;
+            ctrl.settleFrameCount = ctrl.droppedFrameCount = 0;
             ctrl.settleTimeout->Start();
             SETSTATE(STATE_SETTLE_WAIT);
             GuideLog.NotifySettlingStateChange("Settling started");
@@ -391,13 +432,33 @@ void PhdController::UpdateControllerState(void)
             bool aoBumpInProgress = IsAoBumpInProgress();
             long timeInRange = 0;
 
-            Debug.AddLine("PhdController: settling, locked = %d, distance = %.2f (%.2f) aobump = %d", lockedOnStar, currentError,
-                ctrl.settle.tolerancePx, aoBumpInProgress);
+            ++ctrl.settleFrameCount;
+
+            if (!lockedOnStar)
+                ++ctrl.droppedFrameCount;
+
+            Debug.Write(wxString::Format("PhdController: settling, locked = %d, distance = %.2f (%.2f) aobump = %d frame = %d / %d\n",
+                                         lockedOnStar, currentError, ctrl.settle.tolerancePx, aoBumpInProgress, ctrl.settleFrameCount,
+                                         ctrl.settle.frames));
+
+            if (ctrl.settleFrameCount >= ctrl.settle.frames)
+            {
+                ctrl.succeeded = true;
+                SETSTATE(STATE_FINISH);
+                break;
+            }
 
             if (inRange)
             {
                 if (!ctrl.settlePriorFrameInRange)
                 {
+                    // first frame
+                    if (ctrl.settle.settleTimeSec <= 0)
+                    {
+                        ctrl.succeeded = true;
+                        SETSTATE(STATE_FINISH);
+                        break;
+                    }
                     ctrl.settleInRange->Start();
                 }
                 else if (((timeInRange = ctrl.settleInRange->Time()) / 1000) >= ctrl.settle.settleTimeSec && !aoBumpInProgress)
@@ -412,7 +473,7 @@ void PhdController::UpdateControllerState(void)
                 do_fail(_T("timed-out waiting for guider to settle"));
                 break;
             }
-            EvtServer.NotifySettling(currentError, (double) timeInRange / 1000., ctrl.settle.settleTimeSec);
+            EvtServer.NotifySettling(currentError, (double)timeInRange / 1000., ctrl.settle.settleTimeSec, lockedOnStar);
             ctrl.settlePriorFrameInRange = inRange;
             done = true;
             break;

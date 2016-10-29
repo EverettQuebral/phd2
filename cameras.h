@@ -99,18 +99,16 @@
 
 # define ZWO_ASI
 
-#elif defined (__LINUX__)
+#elif defined (__linux__)
 # define SIMULATOR
 # define CAM_QHY5
 # define INDI_CAMERA
 # define ZWO_ASI
-# define SIMULATOR
+# define SXV
 #endif
 
 // Currently unused
 // #define NEB_SBIG   // This is for an on-hold project that would get the guide chip data from an SBIG connected in Neb
-
-extern bool DLLExists(const wxString& DLLName);
 
 #endif /* OPENPHD */
 

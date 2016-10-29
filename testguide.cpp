@@ -89,8 +89,8 @@ wxSizer *TestGuideDialog::InitMountControls()
 
     sz1->Add(new wxStaticText(this, wxID_ANY, _("Guide Pulse Duration (ms):")),
         wxSizerFlags().Right().Border(wxRIGHT, 5).Align(wxALIGN_CENTER_VERTICAL));
-    pulseDurationSpinCtrl = new wxSpinCtrlDouble(this, ID_PULSEDURATION, wxEmptyString, wxDefaultPosition,
-        wxSize(StringWidth(GetParent(),"00000")+30,-1), wxSP_ARROW_KEYS | wxALIGN_RIGHT, 100.0, 5000.0, 100.0, 100.0);
+    pulseDurationSpinCtrl = pFrame->MakeSpinCtrlDouble(this, ID_PULSEDURATION, wxEmptyString, wxDefaultPosition,
+        wxSize(StringWidth(GetParent(), "00000"), -1), wxSP_ARROW_KEYS | wxALIGN_RIGHT, 100.0, 5000.0, 100.0, 100.0);
     pulseDurationSpinCtrl->SetDigits(0);
     pulseDurationSpinCtrl->SetToolTip(_("Manual guide pulse duration (milliseconds)"));
     Mount *mnt = TheScope();
@@ -117,8 +117,8 @@ wxSizer *TestGuideDialog::InitMountControls()
     sz2->Add(ditherTypeChoice, wxSizerFlags().Left().Border(wxRIGHT, 10).Align(wxALIGN_CENTER_VERTICAL));
 
     sz2->Add(new wxStaticText(this, wxID_ANY, _("Scale")), wxSizerFlags().Right().Border(wxRIGHT, 5).Align(wxALIGN_CENTER_VERTICAL));
-    ditherScaleSpinCtrl = new wxSpinCtrlDouble(this, ID_DITHERSCALE, wxEmptyString, wxDefaultPosition,
-        wxSize(StringWidth(GetParent(),"000.0")+30,-1), wxSP_ARROW_KEYS | wxALIGN_RIGHT, 0.1, 100.0, 1.0, 1.0);
+    ditherScaleSpinCtrl = pFrame->MakeSpinCtrlDouble(this, ID_DITHERSCALE, wxEmptyString, wxDefaultPosition,
+        wxSize(StringWidth(GetParent(), "000.0"), -1), wxSP_ARROW_KEYS | wxALIGN_RIGHT, 0.1, 100.0, 1.0, 1.0);
     ditherScaleSpinCtrl->SetDigits(1);
     ditherScaleSpinCtrl->SetValue(pFrame->GetDitherScaleFactor());
     ditherScaleSpinCtrl->SetToolTip(_("Scale factor for dithering. The dither amount type is multiplied by this value to get the actual dither amount. Changing the value here affects both manual dithering and dithering from imaging applications connected to PHD."));
@@ -256,12 +256,14 @@ void TestGuideDialog::OnRAOnlyChecked(wxCommandEvent& evt)
 void TestGuideDialog::OnDither(wxCommandEvent& evt)
 {
     int ditherType = ditherTypeChoice->GetSelection() + 1;
-    pFrame->Dither(pFrame->GetDitherAmount(ditherType), pFrame->GetDitherRaOnly());
+    wxString errMsg;
+    PhdController::DitherCompat(pFrame->GetDitherAmount(ditherType), pFrame->GetDitherRaOnly(), &errMsg);
 }
 
 void TestGuideDialog::OnButton(wxCommandEvent &evt)
 {
     int duration = (int) floor(pulseDurationSpinCtrl->GetValue());
+    wxString logMsg = "Manual Guide: ";
 
     switch (evt.GetId())
     {
@@ -269,51 +271,60 @@ void TestGuideDialog::OnButton(wxCommandEvent &evt)
             if (pMount && pMount->IsConnected())
             {
                 pMount->CalibrationMove(UP, duration);
+                logMsg += wxString::Format("North %d ms", duration);
             }
             break;
         case MGUIDE1_DOWN:
             if (pMount && pMount->IsConnected())
             {
                 pMount->CalibrationMove(DOWN, duration);
+                logMsg += wxString::Format("South %d ms", duration);
             }
             break;
         case MGUIDE1_RIGHT:
             if (pMount && pMount->IsConnected())
             {
                 pMount->CalibrationMove(RIGHT, duration);
+                logMsg += wxString::Format("East %d ms", duration);
             }
             break;
         case MGUIDE1_LEFT:
             if (pMount && pMount->IsConnected())
             {
                 pMount->CalibrationMove(LEFT, duration);
+                logMsg += wxString::Format("West %d ms", duration);
             }
             break;
         case MGUIDE2_UP:
             if (pSecondaryMount && pSecondaryMount->IsConnected())
             {
                 pSecondaryMount->CalibrationMove(UP, duration);
+                logMsg += wxString::Format("North %d ms", duration);
             }
             break;
         case MGUIDE2_DOWN:
             if (pSecondaryMount && pSecondaryMount->IsConnected())
             {
                 pSecondaryMount->CalibrationMove(DOWN, duration);
+                logMsg += wxString::Format("South %d ms", duration);
             }
             break;
         case MGUIDE2_RIGHT:
             if (pSecondaryMount && pSecondaryMount->IsConnected())
             {
                 pSecondaryMount->CalibrationMove(RIGHT, duration);
+                logMsg += wxString::Format("East %d ms", duration);
             }
             break;
         case MGUIDE2_LEFT:
             if (pSecondaryMount && pSecondaryMount->IsConnected())
             {
                 pSecondaryMount->CalibrationMove(LEFT, duration);
+                logMsg += wxString::Format("West %d ms", duration);
             }
             break;
     }
+    Debug.AddLine(logMsg);
 }
 
 wxWindow *TestGuide::CreateManualGuideWindow()

@@ -71,6 +71,8 @@ class CameraConfigDialogCtrlSet : public ConfigDialogCtrlSet
     wxSpinCtrl *m_pDelay;
     wxSpinCtrlDouble *m_pPixelSize;
     wxChoice *m_binning;
+    wxCheckBox *m_coolerOn;
+    wxSpinCtrl *m_coolerSetpt;
 
 public:
     CameraConfigDialogCtrlSet(wxWindow *pParent, GuideCamera *pCamera, AdvancedDialog *pAdvancedDialog, BrainCtrlIdMap& CtrlMap);
@@ -99,6 +101,8 @@ class GuideCamera :  public wxMessageBoxProxy, public OnboardST4
     friend class CameraConfigDialogPane;
     friend class CameraConfigDialogCtrlSet;
 
+    double          m_pixelSize;
+
 protected:
     bool            m_hasGuideOutput;
     int             m_timeoutMs;
@@ -114,13 +118,13 @@ public:
     bool            HasGainControl;
     bool            HasShutter;
     bool            HasSubframes;
-    unsigned short  MaxBinning;
+    wxByte          MaxBinning;
+    wxByte          Binning;
     short           Port;
     int             ReadDelay;
-    unsigned short  Binning;
     bool            ShutterClosed;  // false=light, true=dark
     bool            UseSubframes;
-    double          PixelSize;
+    bool            HasCooler;
 
     wxCriticalSection DarkFrameLock; // dark frames can be accessed in the main thread or the camera worker thread
     usImage        *CurrentDarkFrame;
@@ -133,10 +137,11 @@ public:
     GuideCamera(void);
     virtual ~GuideCamera(void);
 
-    virtual bool HasNonGuiCapture(void);
+    virtual bool HasNonGuiCapture(void) = 0;
+    virtual wxByte BitsPerPixel(void) = 0;
 
-    virtual bool    Capture(int duration, usImage& img, int captureOptions, const wxRect& subframe) = 0;
-    bool Capture(int duration, usImage& img, int captureOptions) { return Capture(duration, img, captureOptions, wxRect(0, 0, 0, 0)); }
+    static bool Capture(GuideCamera *camera, int duration, usImage& img, int captureOptions, const wxRect& subframe);
+    static bool Capture(GuideCamera *camera, int duration, usImage& img, int captureOptions) { return Capture(camera, duration, img, captureOptions, wxRect(0, 0, 0, 0)); }
 
     virtual bool HandleSelectCameraButtonClick(wxCommandEvent& evt);
     static const wxString DEFAULT_CAMERA_ID;
@@ -160,6 +165,13 @@ public:
     void GetBinningOpts(wxArrayString *opts);
 
     virtual void    ShowPropertyDialog() { return; }
+    bool            SetCameraPixelSize(double pixel_size);
+    double          GetCameraPixelSize(void) const;
+    virtual bool    GetDevicePixelSize(double *devPixelSize);           // Value from device/driver or error return
+
+    virtual bool    SetCoolerOn(bool on);
+    virtual bool    SetCoolerSetpoint(double temperature);
+    virtual bool    GetCoolerStatus(bool *on, double *setpoint, double *power, double *temperature);
 
     virtual wxString GetSettingsSummary();
     void            AddDark(usImage *dark);
@@ -173,22 +185,27 @@ public:
 
     virtual const wxSize& DarkFrameSize() { return FullSize; }
 
+    static double GetProfilePixelSize(void);
+
 protected:
 
+    virtual bool Capture(int duration, usImage& img, int captureOptions, const wxRect& subframe) = 0;
     int GetCameraGain(void);
     bool SetCameraGain(int cameraGain);
     bool SetBinning(int binning);
     int GetTimeoutMs(void) const;
     void SetTimeoutMs(int timeoutMs);
-    virtual double GetCameraPixelSize(void);
-    virtual bool SetCameraPixelSize(double pixel_size);
 
     enum CaptureFailType {
         CAPT_FAIL_MEMORY,
         CAPT_FAIL_TIMEOUT,
     };
+    enum ReconnectType {
+        NO_RECONNECT,
+        RECONNECT,
+    };
     void DisconnectWithAlert(CaptureFailType type);
-    void DisconnectWithAlert(const wxString& msg);
+    void DisconnectWithAlert(const wxString& msg, ReconnectType reconnect);
 };
 
 inline int GuideCamera::GetTimeoutMs(void) const
@@ -199,6 +216,16 @@ inline int GuideCamera::GetTimeoutMs(void) const
 inline void GuideCamera::GetBinningOpts(wxArrayString *opts)
 {
     GetBinningOpts(MaxBinning, opts);
+}
+
+inline double GuideCamera::GetCameraPixelSize(void) const
+{
+    return m_pixelSize;
+}
+
+inline bool GuideCamera::GetDevicePixelSize(double *devPixelSize)
+{
+    return true;                // Return an error, the device/driver can't report pixel size
 }
 
 #endif /* CAMERA_H_INCLUDED */

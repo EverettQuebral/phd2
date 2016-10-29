@@ -47,7 +47,8 @@ bool DCAM_start_stop_mode = true;
 
 #include "cam_firewire.h"
 
-Camera_FirewireClass::Camera_FirewireClass() : m_dcContext(0), camera(0) {
+Camera_FirewireClass::Camera_FirewireClass() : m_dcContext(0), camera(0)
+{
     Connected = false;
 //  HaveBPMap = false;
 //  NBadPixels=-1;
@@ -64,6 +65,11 @@ Camera_FirewireClass::~Camera_FirewireClass()
       dc1394_free(m_dcContext);
       m_dcContext = 0;
   }
+}
+
+wxByte Camera_FirewireClass::BitsPerPixel()
+{
+    return 8;
 }
 
 bool Camera_FirewireClass::Connect(const wxString& camId)
@@ -314,7 +320,7 @@ bool Camera_FirewireClass::Capture(int duration, usImage& img, int options, cons
 
     /*
     while (vframe && vpFrame->frames_behind) {
-        pFrame->SetStatusText(wxString::Format("%d %d %d", (int) vpFrame->size[0], (int) vpFrame->image_bytes, (int) vpFrame->frames_behind));
+        pFrame->StatusMsg(wxString::Format("%d %d %d", (int) vpFrame->size[0], (int) vpFrame->image_bytes, (int) vpFrame->frames_behind));
         dc1394_capture_enqueue(camera, vframe);
         dc1394_capture_dequeue(camera,DC1394_CAPTURE_POLICY_POLL, &vframe);
     }*/
@@ -352,15 +358,15 @@ bool Camera_FirewireClass::Capture(int duration, usImage& img, int options, cons
 
     // grab the next frame
     if (dc1394_capture_dequeue(camera, DC1394_CAPTURE_POLICY_WAIT, &vframe) != DC1394_SUCCESS) {
-        DisconnectWithAlert(_("Cannot get a frame from the queue"));
+        DisconnectWithAlert(_("Cannot get a frame from the queue"), NO_RECONNECT);
         return true;
     }
     imgptr = vframe->image;
-//  pFrame->SetStatusText(wxString::Format("%d %d %d",(int) vpFrame->frames_behind, (int) vpFrame->size[0], (int) vpFrame->size[1]));
+//  pFrame->StatusMsg(wxString::Format("%d %d %d",(int) vpFrame->frames_behind, (int) vpFrame->size[0], (int) vpFrame->size[1]));
     for (i=0; i<img.NPixels; i++, dataptr++, imgptr++)
         *dataptr = (unsigned short) *imgptr;
     dc1394_capture_enqueue(camera, vframe);  // release this frame
-//  pFrame->SetStatusText(wxString::Format("Behind: %lu Pos: %lu",vpFrame->frames_behind,vpFrame->id));
+//  pFrame->StatusMsg(wxString::Format("Behind: %lu Pos: %lu",vpFrame->frames_behind,vpFrame->id));
     if (options & CAPTURE_SUBTRACT_DARK) SubtractDark(img);
 
     if (DCAM_start_stop_mode)

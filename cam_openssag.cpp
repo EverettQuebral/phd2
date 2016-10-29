@@ -35,29 +35,68 @@
 
 
 #include "phd.h"
+
 #ifdef OPENSSAG
 #include "camera.h"
 #include "image_math.h"
 #include "cam_openssag.h"
 
 #include <openssag.h>
+#include <libusb.h>
 
 using namespace OpenSSAG;
 
+static bool s_libusb_init_done;
+
+static bool init_libusb()
+{
+    if (s_libusb_init_done)
+        return false;
+    int ret = libusb_init(0);
+    if (ret != 0)
+        return true;
+    s_libusb_init_done = true;
+    return false;
+}
+
+static void uninit_libusb()
+{
+    if (s_libusb_init_done)
+    {
+        libusb_exit(0);
+        s_libusb_init_done = false;
+    }
+}
+
 Camera_OpenSSAGClass::Camera_OpenSSAGClass()
 {
-    Connected = FALSE;
-    Name=_T("StarShoot Autoguider (OpenSSAG)");
+    Connected = false;
+    Name = _T("StarShoot Autoguider (OpenSSAG)");
     FullSize = wxSize(1280,1024);  // Current size of a full frame
     m_hasGuideOutput = true;  // Do we have an ST4 port?
     HasGainControl = true;  // Can we adjust gain?
-    PixelSize = 5.2;
 
     ssag = new SSAG();
 }
 
+Camera_OpenSSAGClass::~Camera_OpenSSAGClass()
+{
+    uninit_libusb();
+}
+
+wxByte Camera_OpenSSAGClass::BitsPerPixel()
+{
+    return 8;
+}
+
 bool Camera_OpenSSAGClass::Connect(const wxString& camId)
 {
+    if (init_libusb())
+    {
+        wxMessageBox(_("Could not initialize USB library"), _("Error"));
+        return true;
+    }
+
     struct ConnectInBg : public ConnectCameraInBg
     {
         SSAG *ssag;
@@ -115,7 +154,8 @@ bool Camera_OpenSSAGClass::Capture(int duration, usImage& img, int options, cons
     int xsize = FullSize.GetWidth();
     int ysize = FullSize.GetHeight();
 
-    if (img.Init(FullSize)) {
+    if (img.Init(FullSize))
+    {
         DisconnectWithAlert(CAPT_FAIL_MEMORY);
         return true;
     }
@@ -123,14 +163,26 @@ bool Camera_OpenSSAGClass::Capture(int duration, usImage& img, int options, cons
     ssag->SetGain((int)(GuideCameraGain / 24));
     struct raw_image *raw = ssag->Expose(duration);
 
+    if (!raw)
+    {
+        Debug.Write("ssag Expose returned null!\n");
+        return true;
+    }
+
     for (unsigned int i = 0; i < raw->width * raw->height; i++) {
-        img.ImageData[i] = (int)raw->data[i];
+        img.ImageData[i] = (unsigned short) raw->data[i];
     }
 
     ssag->FreeRawImage(raw);
 
     if (options & CAPTURE_SUBTRACT_DARK) SubtractDark(img);
 
+    return false;
+}
+
+bool Camera_OpenSSAGClass::GetDevicePixelSize(double *devPixelSize)
+{
+    *devPixelSize = 5.2;
     return false;
 }
 

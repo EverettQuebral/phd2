@@ -68,8 +68,8 @@
 #include <stdarg.h>
 
 #define APPNAME _T("PHD2 Guiding")
-#define PHDVERSION _T("2.5.0")
-#define PHDSUBVER _T("dev2")
+#define PHDVERSION _T("2.6.2")
+#define PHDSUBVER _T("dev5")
 #define FULLVER PHDVERSION PHDSUBVER
 
 #if defined (__WINDOWS__)
@@ -101,12 +101,16 @@ WX_DEFINE_ARRAY_DOUBLE(double, ArrayOfDbl);
 #define PATHSEPSTR _T("/")
 #endif
 
+#define DEGREES_SYMBOL "\u00B0"
+
 //#define TEST_TRANSFORMS
 
-#define ROUND(x) (int) floor(x + 0.5)
+#define ROUND(x) (int) floor((x) + 0.5)
+#define ROUNDF(x) (int) floorf((x) + 0.5)
 
 /* eliminate warnings for unused variables */
 #define POSSIBLY_UNUSED(x) (void)(x)
+//#define POSSIBLY_UNUSED(x) printf(x)
 
 // these macros are used for building messages for thrown exceptions
 // It is surprisingly hard to get the line number into a string...
@@ -132,7 +136,7 @@ WX_DEFINE_ARRAY_DOUBLE(double, ArrayOfDbl);
 #define PHD_MESSAGES_CATALOG "messages"
 #endif
 
-#if defined (__LINUX__)
+#if defined (__linux__)
 // On Linux the messages catalogs for all the applications are in the same directory
 // in /usr/share/locale, so the catalog name must be the application name.
 #define PHD_MESSAGES_CATALOG "phd2"
@@ -180,7 +184,7 @@ class wxSingleInstanceChecker;
 
 extern Mount *pMount;
 extern Mount *pSecondaryMount;
-extern Mount *pPointingSource;      // For using an 'aux' mount connection to get pointing info if the user has specified one
+extern Scope *pPointingSource;      // For using an 'aux' mount connection to get pointing info if the user has specified one
 extern GuideCamera *pCamera;
 
 inline static Scope *TheScope(void)

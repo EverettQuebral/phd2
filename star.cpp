@@ -36,6 +36,7 @@
  */
 
 #include "phd.h"
+#include <algorithm>
 
 Star::Star(void)
 {
@@ -70,6 +71,7 @@ void Star::Invalidate(void)
 {
     Mass = 0.0;
     SNR = 0.0;
+    HFD = 0.0;
     m_lastFindResult = STAR_ERROR;
     PHD_Point::Invalidate();
 }
@@ -77,6 +79,60 @@ void Star::Invalidate(void)
 void Star::SetError(FindResult error)
 {
     m_lastFindResult = error;
+}
+
+// helper struct for HFR calculation
+struct R2M
+{
+    double r2;
+    wxPoint p;
+    double m;
+    R2M() { }
+    R2M(int x, int y, double m_) : p(x, y), m(m_) { }
+    bool operator<(const R2M& rhs) const { return r2 < rhs.r2; }
+};
+
+static double hfr(std::vector<R2M>& vec, double cx, double cy, double mass)
+{
+    if (vec.size() == 1) // hot pixel?
+        return 0.25;
+
+    // compute Half Flux Radius (HFR)
+    for (auto it = vec.begin(); it != vec.end(); ++it)
+    {
+        double dx = (double) it->p.x - cx;
+        double dy = (double) it->p.y - cy;
+        it->r2 = dx * dx + dy * dy;
+    }
+    std::sort(vec.begin(), vec.end()); // sort by ascending radius^2
+
+    // find radius of half-mass
+    double r20, r21, m0, m1;
+    r20 = r21 = m0 = m1 = 0.0;
+    double halfm = 0.5 * mass;
+    for (auto it = vec.begin(); it != vec.end(); ++it)
+    {
+        const R2M& rm = *it;
+        r20 = r21;
+        m0 = m1;
+        r21 = rm.r2;
+        m1 += rm.m;
+        if (m1 > halfm)
+            break;
+    }
+
+    // interpolate
+    double hfr;
+    if (m1 > m0)
+    {
+        double r0 = sqrt(r20), r1 = sqrt(r21);
+        double s = (r1 - r0) / (m1 - m0);
+        hfr = r0 + s * (halfm - m0);
+    }
+    else
+        hfr = 0.25;
+
+    return hfr;
 }
 
 bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, FindMode mode)
@@ -140,6 +196,8 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
                     }
                 }
             }
+
+            PeakVal = peak_val;
         }
         else
         {
@@ -152,11 +210,15 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
                 {
                     unsigned short p = imgdata[y * rowsize + x];
                     unsigned int val =
-                        2 * (unsigned int) p +
-                        imgdata[(y - 1) * rowsize + (x + 0)] +
-                        imgdata[(y + 0) * rowsize + (x - 1)] +
-                        imgdata[(y + 0) * rowsize + (x + 1)] +
-                        imgdata[(y + 1) * rowsize + (x + 0)];
+                        4 * (unsigned int) p +
+                        imgdata[(y - 1) * rowsize + (x - 1)] +
+                        imgdata[(y - 1) * rowsize + (x + 1)] +
+                        imgdata[(y + 1) * rowsize + (x - 1)] +
+                        imgdata[(y + 1) * rowsize + (x + 1)] +
+                        2 * imgdata[(y - 1) * rowsize + (x + 0)] +
+                        2 * imgdata[(y + 0) * rowsize + (x - 1)] +
+                        2 * imgdata[(y + 0) * rowsize + (x + 1)] +
+                        2 * imgdata[(y + 1) * rowsize + (x + 0)];
 
                     if (val > peak_val)
                     {
@@ -173,6 +235,9 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
                         std::swap(p, max3[2]);
                 }
             }
+
+            PeakVal = max3[0];   // raw peak val
+            peak_val /= 16; // smoothed peak value
         }
 
         // meaure noise in the annulus with inner radius A and outer radius B
@@ -181,12 +246,18 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
         int const A2 = A * A;
         int const B2 = B * B;
 
+        // center window around peak value
+        start_x = wxMax(peak_x - B, minx);
+        end_x = wxMin(peak_x + B, maxx);
+        start_y = wxMax(peak_y - B, miny);
+        end_y = wxMin(peak_y + B, maxy);
+
         // find the mean and stdev of the background
 
         double sum = 0.0;
         double a = 0.0;
         double q = 0.0;
-        int n = 0;
+        unsigned int nbg = 0;
 
         const unsigned short *row = imgdata + rowsize * start_y;
         for (int y = start_y; y <= end_y; y++, row += rowsize)
@@ -204,29 +275,35 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
 
                 double const val = (double) row[x];
                 sum += val;
-                ++n;
-                double const k = (double) n;
+                ++nbg;
+                double const k = (double) nbg;
                 double const a0 = a;
                 a += (val - a) / k;
                 q += (val - a0) * (val - a);
             }
         }
 
-        double const mean_bg = sum / (double) n;
-        double const sigma_bg = sqrt(q / (double) (n - 1));
+        double const mean_bg = sum / (double) nbg;
+        double const sigma2_bg = q / (double) (nbg - 1);
+        double const sigma_bg = sqrt(sigma2_bg);
+        unsigned short thresh;
 
         double cx = 0.0;
         double cy = 0.0;
         double mass = 0.0;
+        unsigned int n;
+
+        std::vector<R2M> hfrvec;
 
         if (mode == FIND_PEAK)
         {
             mass = peak_val;
             n = 1;
+            thresh = 0;
         }
         else
         {
-            unsigned short const thresh = (unsigned short)(mean_bg + 2.0 * sigma_bg);
+            thresh = (unsigned short)(mean_bg + 3.0 * sigma_bg + 0.5);
 
             // find pixels over threshold within aperture; compute mass and centroid
 
@@ -264,14 +341,28 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
                     cy += dy * d;
                     mass += d;
                     ++n;
+
+                    hfrvec.push_back(R2M(x, y, d));
                 }
             }
         }
 
         Mass = mass;
-        SNR = n > 0 ? mass / (sigma_bg * n) : 0.0;
+
+        // SNR estimate from: Measuring the Signal-to-Noise Ratio S/N of the CCD Image of a Star or Nebula, J.H.Simonetti, 2004 January 8
+        //     http://www.phys.vt.edu/~jhs/phys3154/snr20040108.pdf
+        double const gain = .5; // electrons per ADU, nominal
+        SNR = n > 0 ? mass / sqrt(mass / gain + sigma2_bg * (double) n * (1.0 + 1.0 / (double) nbg)) : 0.0;
 
         double const LOW_SNR = 3.0;
+
+        // a few scattered pixels over threshold can give a false positive
+        // avoid this by requiring the smoothed peak value to be above the threshold
+        if (peak_val <= thresh && SNR >= LOW_SNR)
+        {
+            Debug.Write(wxString::Format("Star::Find false star n=%u nbg=%u bg=%.1f sigma=%.1f thresh=%u peak=%u\n", n, nbg, mean_bg, sigma_bg, thresh, peak_val));
+            SNR = LOW_SNR - 0.1;
+        }
 
         if (mass < 10.0)
             Result = STAR_LOWMASS;
@@ -282,10 +373,30 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
             newX = peak_x + cx / mass;
             newY = peak_y + cy / mass;
 
+            HFD = 2.0 * hfr(hfrvec, newX, newY, mass);
+
             // even at saturation, the max values may vary a bit due to noise
-            // Call it saturated if the the top three values are within 32 parts per 65535 of max
-            if ((unsigned int)(max3[0] - max3[2]) * 65535U < 32U * (unsigned int) max3[0])
-                Result = STAR_SATURATED;
+            // Call it saturated if the the top three values are within 32 parts per 65535 of max for 16-bit cameras,
+            // or within 1 part per 191 for 8-bit cameras
+            unsigned int d = (unsigned int) (max3[0] - max3[2]);
+            unsigned int mx = (unsigned int) max3[0];
+
+            // remove pedestal
+            if (mx >= pImg->Pedestal)
+                mx -= pImg->Pedestal;
+            else
+                mx = 0; // unlikely
+
+            if (pImg->BitsPerPixel < 12)
+            {
+                if (d * 191U < 1U * mx)
+                    Result = STAR_SATURATED;
+            }
+            else
+            {
+                if (d * 65535U < 32U * mx)
+                    Result = STAR_SATURATED;
+            }
         }
     }
     catch (const wxString& Msg)
@@ -302,18 +413,19 @@ bool Star::Find(const usImage *pImg, int searchRegion, int base_x, int base_y, F
     SetXY(newX, newY);
     m_lastFindResult = Result;
 
-    bool bReturn = WasFound(Result);
+    bool wasFound = WasFound(Result);
 
-    if (!bReturn)
+    if (!IsValid() || Result == STAR_ERROR)
     {
         Mass = 0.0;
         SNR = 0.0;
+        HFD = 0.0;
     }
 
-    Debug.AddLine(wxString::Format("Star::Find returns %d (%d), X=%.2f, Y=%.2f, Mass=%.f, SNR=%.1f",
-        bReturn, Result, newX, newY, Mass, SNR));
+    Debug.Write(wxString::Format("Star::Find returns %d (%d), X=%.2f, Y=%.2f, Mass=%.f, SNR=%.1f, Peak=%hu HFD=%.1f\n",
+        wasFound, Result, newX, newY, Mass, SNR, PeakVal, HFD));
 
-    return bReturn;
+    return wasFound;
 }
 
 bool Star::Find(const usImage *pImg, int searchRegion, FindMode mode)
@@ -541,7 +653,7 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
 
     wxBusyCursor busy;
 
-    Debug.AddLine(wxString::Format("Star::AutoFind called with edgeAllowance = %d searchRegion = %d", extraEdgeAllowance, searchRegion));
+    Debug.Write(wxString::Format("Star::AutoFind called with edgeAllowance = %d searchRegion = %d\n", extraEdgeAllowance, searchRegion));
 
     // run a 3x3 median first to eliminate hot pixels
     usImage smoothed;
@@ -580,10 +692,10 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
     double global_mean, global_stdev;
     GetStats(&global_mean, &global_stdev, conv, convRect);
 
-    Debug.AddLine("AutoFind: global mean = %.1f, stdev %.1f", global_mean, global_stdev);
+    Debug.Write(wxString::Format("AutoFind: global mean = %.1f, stdev %.1f\n", global_mean, global_stdev));
 
     const double threshold = 0.1;
-    Debug.AddLine("AutoFind: using threshold = %.1f", threshold);
+    Debug.Write(wxString::Format("AutoFind: using threshold = %.1f\n", threshold));
 
     // find each local maximum
     int srch = 4;
@@ -625,7 +737,7 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
 
             if (h < threshold)
             {
-                //  Debug.AddLine(wxString::Format("AG: local max REJECT [%d, %d] PSF %.1f SNR %.1f", imgx, imgy, val, SNR));
+                //  Debug.Write(wxString::Format("AG: local max REJECT [%d, %d] PSF %.1f SNR %.1f\n", imgx, imgy, val, SNR));
                 continue;
             }
 
@@ -640,7 +752,7 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
     }
 
     for (std::set<Peak>::const_reverse_iterator it = stars.rbegin(); it != stars.rend(); ++it)
-        Debug.AddLine("AutoFind: local max [%d, %d] %.1f", it->x, it->y, it->val);
+        Debug.Write(wxString::Format("AutoFind: local max [%d, %d] %.1f\n", it->x, it->y, it->val));
 
     // merge stars that are very close into a single star
     {
@@ -658,7 +770,7 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
                 if (d2 < minlimitsq)
                 {
                     // very close, treat as single star
-                    Debug.AddLine("AutoFind: merge [%d, %d] %.1f - [%d, %d] %.1f", a->x, a->y, a->val, b->x, b->y, b->val);
+                    Debug.Write(wxString::Format("AutoFind: merge [%d, %d] %.1f - [%d, %d] %.1f\n", a->x, a->y, a->val, b->x, b->y, b->val));
                     // erase the dimmer one
                     stars.erase(a);
                     goto repeat;
@@ -687,11 +799,11 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
                     // but do not let a very dim star eliminate a very bright star
                     if (b->val / a->val >= 5.0)
                     {
-                        Debug.AddLine("AutoFind: close dim-bright [%d, %d] %.1f - [%d, %d] %.1f", a->x, a->y, a->val, b->x, b->y, b->val);
+                        Debug.Write(wxString::Format("AutoFind: close dim-bright [%d, %d] %.1f - [%d, %d] %.1f\n", a->x, a->y, a->val, b->x, b->y, b->val));
                     }
                     else
                     {
-                        Debug.AddLine("AutoFind: too close [%d, %d] %.1f - [%d, %d] %.1f", a->x, a->y, a->val, b->x, b->y, b->val);
+                        Debug.Write(wxString::Format("AutoFind: too close [%d, %d] %.1f - [%d, %d] %.1f\n", a->x, a->y, a->val, b->x, b->y, b->val));
                         to_erase.insert(std::distance(stars.begin(), a));
                         to_erase.insert(std::distance(stars.begin(), b));
                     }
@@ -714,7 +826,7 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
             if (it->x <= edgeDist || it->x >= image.Size.GetWidth() - edgeDist ||
                 it->y <= edgeDist || it->y >= image.Size.GetHeight() - edgeDist)
             {
-                Debug.AddLine("AutoFind: too close to edge [%d, %d] %.1f", it->x, it->y, it->val);
+                Debug.Write(wxString::Format("AutoFind: too close to edge [%d, %d] %.1f\n", it->x, it->y, it->val));
                 stars.erase(it);
             }
             it = next;
@@ -725,11 +837,70 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
     // star. This had the unfortunate effect of locating hot pixels which
     // the psf convolution so nicely avoids. So, don't do that!  -ag
 
-    // find the brightest non-saturated star. If no non-saturated stars, settle for a saturated star.
-    bool allowSaturated = false;
-    while (true)
+    // try to identify the saturation point
+
+    //  first, find the peak pixel overall
+    unsigned short maxVal = 0;
+    for (unsigned int i = 0; i < image.NPixels; i++)
+        if (image.ImageData[i] > maxVal)
+            maxVal = image.ImageData[i];
+
+    // next see if any of the stars has a flat-top
+    bool foundSaturated = false;
+    for (std::set<Peak>::reverse_iterator it = stars.rbegin(); it != stars.rend(); ++it)
     {
-        Debug.AddLine("AutoSelect: finding best star allowSaturated = %d", allowSaturated);
+        Star tmp;
+        tmp.Find(&image, searchRegion, it->x, it->y, FIND_CENTROID);
+        if (tmp.WasFound() && tmp.GetError() == STAR_SATURATED)
+        {
+            if ((maxVal - tmp.PeakVal) * 255U > maxVal)
+            {
+                // false positive saturation, flat top but below maxVal
+                Debug.Write(wxString::Format("AutoSelect: false positive saturation peak = %hu, max = %hu\n", tmp.PeakVal, maxVal));
+            }
+            else
+            {
+                // a saturated star was found
+                foundSaturated = true;
+                break;
+            }
+        }
+    }
+
+    unsigned int sat_level; // saturation level, including pedestal
+    if (foundSaturated)
+    {
+        // use the peak overall pixel value as the saturation limit
+        Debug.Write(wxString::Format("AutoSelect: using saturation level peakVal = %hu\n", maxVal));
+        sat_level = maxVal; // includes pedestal
+    }
+    else
+    {
+        // no staurated stars found, can't make any assumption about whether the max val is saturated
+
+        Debug.Write(wxString::Format("AutoSelect: using saturation level from BPP %u and pedestal %hu\n",
+            image.BitsPerPixel, image.Pedestal));
+
+        sat_level = ((1U << image.BitsPerPixel) - 1) + image.Pedestal;
+        if (sat_level > 65535)
+            sat_level = 65535;
+    }
+    unsigned int diff = sat_level > image.Pedestal ? sat_level - image.Pedestal : 0U;
+    // "near-saturation" threshold at 90% saturation
+    unsigned short sat_thresh = (unsigned short)((unsigned int) image.Pedestal + 9 * diff / 10);
+
+    Debug.Write(wxString::Format("AutoSelect: BPP = %u, saturation at %u, pedestal %hu, thresh = %hu\n",
+        image.BitsPerPixel, sat_level, image.Pedestal, sat_thresh));
+
+    // Final star selection
+    //   pass 1: find brightest star with peak value < 90% saturation AND SNR > 6
+    //       this pass will reject saturated and nearly-saturated stars
+    //   pass 2: find brightest non-saturated star
+    //   pass 3: find brightest star, even if saturated
+
+    for (int pass = 1; pass <= 3; pass++)
+    {
+        Debug.Write(wxString::Format("AutoSelect: finding best star pass %d\n", pass));
 
         for (std::set<Peak>::reverse_iterator it = stars.rbegin(); it != stars.rend(); ++it)
         {
@@ -737,25 +908,38 @@ bool Star::AutoFind(const usImage& image, int extraEdgeAllowance, int searchRegi
             tmp.Find(&image, searchRegion, it->x, it->y, FIND_CENTROID);
             if (tmp.WasFound())
             {
-                if (tmp.GetError() == STAR_SATURATED && !allowSaturated)
+                if (pass == 1)
                 {
-                    Debug.AddLine("Autofind: star saturated [%d, %d] %.1f Mass %.f SNR %.1f", it->x, it->y, it->val, tmp.Mass, tmp.SNR);
-                    continue;
+                    if (tmp.PeakVal > sat_thresh)
+                    {
+                        Debug.Write(wxString::Format("Autofind: near-saturated [%d, %d] %.1f Mass %.f SNR %.1f Peak %hu\n", it->x, it->y, it->val, tmp.Mass, tmp.SNR, tmp.PeakVal));
+                        continue;
+                    }
+                    if (tmp.GetError() == STAR_SATURATED || tmp.SNR < 6.0)
+                        continue;
                 }
+                else if (pass == 2)
+                {
+                    if (tmp.GetError() == STAR_SATURATED)
+                    {
+                        Debug.Write(wxString::Format("Autofind: star saturated [%d, %d] %.1f Mass %.f SNR %.1f\n", it->x, it->y, it->val, tmp.Mass, tmp.SNR));
+                        continue;
+                    }
+                }
+
+                // star accepted
                 SetXY(it->x, it->y);
-                Debug.AddLine("Autofind returns star at [%d, %d] %.1f Mass %.f SNR %.1f", it->x, it->y, it->val, tmp.Mass, tmp.SNR);
+                Debug.Write(wxString::Format("Autofind returns star at [%d, %d] %.1f Mass %.f SNR %.1f\n", it->x, it->y, it->val, tmp.Mass, tmp.SNR));
                 return true;
             }
         }
 
-        if (allowSaturated)
-            break; // no stars found
-
-        Debug.AddLine("AutoFind: could not find a non-saturated star!");
-
-        allowSaturated = true;
+        if (pass == 1)
+            Debug.Write("AutoFind: could not find a star on Pass 1\n");
+        else if (pass == 2)
+            Debug.Write("AutoFind: could not find a non-saturated star!\n");
     }
 
-    Debug.AddLine("Autofind: no star found");
+    Debug.Write("Autofind: no star found\n");
     return false;
 }

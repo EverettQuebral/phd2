@@ -78,6 +78,7 @@ struct DriftToolWin : public wxFrame
     GraphLogClientWindow::GRAPH_MODE m_save_graph_mode;
     int m_save_graph_length;
     int m_save_graph_height;
+    bool m_location_prompt_done;
 
     bool m_can_slew;
     bool m_slewing;
@@ -153,7 +154,7 @@ DriftToolWin::DriftToolWin()
     m_bmp = new wxStaticBitmap(this, wxID_ANY, *m_azArrowBmp, wxDefaultPosition, wxSize(80, 100));
     instrSizer->Add(m_bmp, 0, wxALIGN_CENTER_VERTICAL|wxFIXED_MINSIZE, 5);
 
-    m_instructions = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(300,90), wxALIGN_LEFT|wxST_NO_AUTORESIZE);
+    m_instructions = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(400,120), wxALIGN_LEFT|wxST_NO_AUTORESIZE);
 #ifdef __WXOSX__
     m_instructions->SetFont(*wxSMALL_FONT);
 #endif
@@ -172,11 +173,11 @@ DriftToolWin::DriftToolWin()
 
     wxStaticText *txt;
 
-    txt = new wxStaticText(this, wxID_ANY, _("Meridian Offset (deg)"), wxDefaultPosition, wxDefaultSize, 0);
+    txt = new wxStaticText(this, wxID_ANY, _("Meridian Offset (" DEGREES_SYMBOL ")"), wxDefaultPosition, wxDefaultSize, 0);
     txt->Wrap(-1);
     gbSizer->Add(txt, wxGBPosition(0, 1), wxGBSpan(1, 1), wxALL, 5);
 
-    txt = new wxStaticText(this, wxID_ANY, _("Declination (deg)"), wxDefaultPosition, wxDefaultSize, 0);
+    txt = new wxStaticText(this, wxID_ANY, _("Declination (" DEGREES_SYMBOL ")"), wxDefaultPosition, wxDefaultSize, 0);
     txt->Wrap(-1);
     gbSizer->Add(txt, wxGBPosition(0, 2), wxGBSpan(1, 1), wxALL, 5);
 
@@ -311,6 +312,7 @@ DriftToolWin::DriftToolWin()
 
     m_phase = PHASE_ADJUST_AZ;
     m_mode = MODE_IDLE;
+    m_location_prompt_done = false;
     UpdatePhaseState();
     UpdateModeState();
 }
@@ -442,8 +444,11 @@ repeat:
             case STATE_UNINITIALIZED:
             case STATE_CALIBRATED:
             case STATE_SELECTING:
-                SetStatusText(_("Auto-selecting a star"));
-                pFrame->OnAutoStar(dummy);
+                if (!pFrame->pGuider->IsLocked())
+                {
+                    SetStatusText(_("Auto-selecting a star"));
+                    pFrame->OnAutoStar(dummy);
+                }
                 return;
             case STATE_CALIBRATING_PRIMARY:
             case STATE_CALIBRATING_SECONDARY:
@@ -452,7 +457,7 @@ repeat:
                 return;
             case STATE_SELECTED:
                 SetStatusText(_("Start guiding..."));
-                pFrame->OnGuide(dummy);
+                pFrame->GuideButtonClick(false);
                 return;
             case STATE_GUIDING:
                 // turn of dec guiding
@@ -525,24 +530,67 @@ void DriftToolWin::OnSlew(wxCommandEvent& evt)
         return;
     }
 
-    wxBusyCursor busy;
-
     double slew_ra = cur_st + (raSlew * 24.0 / 360.0);
     if (slew_ra >= 24.0)
         slew_ra -= 24.0;
     else if (slew_ra < 0.0)
         slew_ra += 24.0;
-    Debug.AddLine(wxString::Format("Drift tool slew from ra %.2f, dec %.1f to ra %.2f, dec %.1f", cur_ra, cur_dec, slew_ra, decSlew));
-    m_slewing = true;
-    m_slew->Enable(false);
-    GetStatusBar()->PushStatusText(_("Slewing ..."));
-    if (pPointingSource->SlewToCoordinates(slew_ra, decSlew))
+
+    Debug.AddLine(wxString::Format("Drift tool slew from ra %.2f, dec %.1f to ra %.2f, dec %.1f",
+        cur_ra, cur_dec, slew_ra, decSlew));
+
+    if (pPointingSource->CanSlewAsync())
     {
-        GetStatusBar()->PopStatusText();
-        m_slewing = false;
-        m_slew->Enable(true);
-        Debug.AddLine("Drift tool: slew failed");
+        struct SlewInBg : public RunInBg
+        {
+            double ra, dec;
+            SlewInBg(wxWindow *parent, double ra_, double dec_)
+                : RunInBg(parent, _("Slew"), _("Slewing...")), ra(ra_), dec(dec_)
+            {
+                SetPopupDelay(100);
+            }
+            bool Entry()
+            {
+                bool err = pPointingSource->SlewToCoordinatesAsync(ra, dec);
+                if (err)
+                {
+                    SetErrorMsg(_("Slew failed!"));
+                    return true;
+                }
+                while (pPointingSource->Slewing())
+                {
+                    wxMilliSleep(500);
+                    if (IsCanceled())
+                    {
+                        pPointingSource->AbortSlew();
+                        SetErrorMsg(_("Slew was canceled"));
+                        break;
+                    }
+                }
+                return false;
+            }
+        };
+        SlewInBg bg(this, slew_ra, decSlew);
+        if (bg.Run())
+        {
+            SetStatusText(bg.GetErrorMsg());
+        }
     }
+    else
+    {
+        wxBusyCursor busy;
+        m_slewing = true;
+        m_slew->Enable(false);
+        GetStatusBar()->PushStatusText(_("Slewing ..."));
+        if (pPointingSource->SlewToCoordinates(slew_ra, decSlew))
+        {
+            GetStatusBar()->PopStatusText();
+            m_slewing = false;
+            m_slew->Enable(true);
+            Debug.AddLine("Drift tool: slew failed");
+        }
+    }
+
     SaveRADec(m_phase, raSlew, decSlew);
 }
 
@@ -569,6 +617,17 @@ void DriftToolWin::OnNotesText(wxCommandEvent& evt)
 
 void DriftToolWin::OnDrift(wxCommandEvent& evt)
 {
+    if (!m_location_prompt_done)
+    {
+        if (pPointingSource && pPointingSource->IsConnected())
+        {
+            bool error = pPointingSource->PreparePositionInteractive();
+            if (error)
+                return;
+            m_location_prompt_done = true;
+        }
+    }
+
     m_mode = MODE_DRIFT;
     UpdateModeState();
 }
@@ -585,6 +644,8 @@ void DriftToolWin::OnPhase(wxCommandEvent& evt)
         m_phase = PHASE_ADJUST_AZ;
     else
         m_phase = PHASE_ADJUST_ALT;
+
+    m_location_prompt_done = false;
 
     UpdatePhaseState();
 
@@ -669,7 +730,7 @@ void DriftToolWin::UpdateScopeCoordinates(void)
         {
             // azimuth correction from "Star Offset Positioning for Polar Axis Alignment", Frank Barrett, 2/19/2010
             double dec_r = radians(dec_deg);
-            if (fabs(dec_r) < Mount::DEC_COMP_LIMIT)
+            if (fabs(dec_r) < Scope::DEC_COMP_LIMIT)
             {
                 double alt_r = radians(90.0 - m_siteLatLong.X + dec_deg);
                 correction = cos(alt_r) / cos(dec_r);
@@ -732,6 +793,12 @@ void DriftToolWin::OnTimer(wxTimerEvent& evt)
 
 wxWindow *DriftTool::CreateDriftToolWindow()
 {
+    if (!pCamera)
+    {
+        wxMessageBox(_("Please connect a camera first."));
+        return 0;
+    }
+
     // confirm that image scale is specified
 
     if (pFrame->GetCameraPixelScale() == 1.0)

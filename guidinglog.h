@@ -45,10 +45,11 @@ struct LockPosShiftParams;
 struct GuideStepInfo
 {
     Mount *mount;
+    int moveType;
     int frameNumber;
     double time;
-    const PHD_Point *cameraOffset;
-    const PHD_Point *mountOffset;
+    PHD_Point cameraOffset;
+    PHD_Point mountOffset;
     double guideDistanceRA;
     double guideDistanceDec;
     int durationRA;
@@ -102,7 +103,7 @@ public:
     void StartCalibration(Mount *pCalibrationMount);
     void CalibrationFailed(Mount *pCalibrationMount, const wxString& msg);
     void CalibrationStep(Mount *pCalibrationMount, const wxString& direction, int steps, double dx, double dy, const PHD_Point &xy, double dist);
-    void CalibrationDirectComplete(Mount *pCalibrationMount, const wxString& direction, double angle, double rate);
+    void CalibrationDirectComplete(Mount *pCalibrationMount, const wxString& direction, double angle, double rate, int parity);
     void CalibrationComplete(Mount *pCalibrationMount);
 
     void StartGuiding();
@@ -115,9 +116,11 @@ public:
     void NotifySetLockPosition(Guider *guider);
     void NotifyLockShiftParams(const LockPosShiftParams& shiftParams, const PHD_Point& cameraRate);
     void NotifySettlingStateChange(const wxString& msg);
+    void NotifyGAResult(const wxString& msg);
 
     void SetGuidingParam(const wxString& name, double val);
     void SetGuidingParam(const wxString& name, int val);
+    void SetGuidingParam(const wxString& name, bool val);
     void SetGuidingParam(const wxString& name, const wxString& val);
 
     bool ChangeDirLog(const wxString& newdir);

@@ -277,7 +277,7 @@ bool usImage::BinnedCopyToImage(wxImage **rawimg, int blevel, int wlevel, double
 
 void usImage::InitImgStartTime()
 {
-    ImgStartTime = time(0);
+    ImgStartTime = wxDateTime::GetTimeNow();
 }
 
 wxString usImage::GetImgStartTime() const
@@ -289,6 +289,22 @@ wxString usImage::GetImgStartTime() const
     return wxString::Format("%.4d-%.2d-%.2dT%.2d:%.2d:%.2d",timestruct->tm_year+1900,timestruct->tm_mon+1,
         timestruct->tm_mday,timestruct->tm_hour,timestruct->tm_min,timestruct->tm_sec);
 }
+
+struct FITSHdrWriter
+{
+    fitsfile *fptr;
+    int *status;
+    FITSHdrWriter(fitsfile *fptr_, int *status_) : fptr(fptr_), status(status_) { }
+    void write(const char *key, float val, const char *comment) {
+        fits_write_key(fptr, TFLOAT, const_cast<char *>(key), &val, const_cast<char *>(comment), status);
+    }
+    void write(const char *key, unsigned int val, const char *comment) {
+        fits_write_key(fptr, TUINT, const_cast<char *>(key), &val, const_cast<char *>(comment), status);
+    }
+    void write(const char *key, const char *val, const char *comment) {
+        fits_write_key(fptr, TSTRING, const_cast<char *>(key), const_cast<char *>(val), const_cast<char *>(comment), status);
+    }
+};
 
 bool usImage::Save(const wxString& fname, const wxString& hdrNote) const
 {
@@ -309,24 +325,77 @@ bool usImage::Save(const wxString& fname, const wxString& hdrNote) const
         PHD_fits_create_file(&fptr, fname, true, &status);
         fits_create_img(fptr, USHORT_IMG, 2, fsize, &status);
 
+        FITSHdrWriter hdr(fptr, &status);
+
         float exposure = (float) ImgExpDur / 1000.0;
-        char *keyname = const_cast<char *>("EXPOSURE");
-        char *comment = const_cast<char *>("Exposure time in seconds");
-        fits_write_key(fptr, TFLOAT, keyname, &exposure, comment, &status);
+        hdr.write("EXPOSURE", exposure, "Exposure time in seconds");
 
         if (ImgStackCnt > 1)
-        {
-            keyname = const_cast<char *>("STACKCNT");
-            comment = const_cast<char *>("Stacked frame count");
-            unsigned int stackcnt = ImgStackCnt;
-            fits_write_key(fptr, TUINT, keyname, &stackcnt, comment, &status);
-        }
+            hdr.write("STACKCNT", (unsigned int) ImgStackCnt, "Stacked frame count");
 
         if (!hdrNote.IsEmpty())
+            hdr.write("USERNOTE", hdrNote.utf8_str(), 0);
+
+        time_t now = wxDateTime::GetTimeNow();
+        struct tm *timestruct = gmtime(&now);
+        char buf[100];
+        sprintf(buf, "%.4d-%.2d-%.2d %.2d:%.2d:%.2d", timestruct->tm_year + 1900, timestruct->tm_mon + 1, timestruct->tm_mday, timestruct->tm_hour, timestruct->tm_min, timestruct->tm_sec);
+        hdr.write("DATE", buf, "Time FITS file was created");
+
+        hdr.write("DATE-OBS", GetImgStartTime().c_str(), "Time image was captured");
+        hdr.write("CREATOR", wxString(APPNAME _T(" ") FULLVER).c_str(), "Capture software");
+        if (pCamera)
         {
-            char *USERNOTE = const_cast<char *>("USERNOTE");
-            fits_write_key(fptr, TSTRING, USERNOTE, const_cast<char *>(static_cast<const char *>(hdrNote)), NULL, &status);
+            hdr.write("INSTRUME", pCamera->Name.c_str(), "Instrument name");
+            unsigned int b = pCamera->Binning;
+            hdr.write("XBINNING", b, "Camera X Bin");
+            hdr.write("YBINNING", b, "Camera Y Bin");
+            hdr.write("CCDXBIN", b, "Camera X Bin");
+            hdr.write("CCDYBIN", b, "Camera Y Bin");
+            float sz = b * pCamera->GetCameraPixelSize();
+            hdr.write("XPIXSZ", sz, "pixel size in microns (with binning)");
+            hdr.write("YPIXSZ", sz, "pixel size in microns (with binning)");
+            unsigned int g = (unsigned int) pCamera->GuideCameraGain;
+            hdr.write("GAIN", g, "PHD Gain Value (0-100)");
         }
+
+        if (pPointingSource)
+        {
+            double ra, dec, st;
+            bool err = pPointingSource->GetCoordinates(&ra, &dec, &st);
+            if (!err)
+            {
+                hdr.write("RA", (float) (ra * 360.0 / 24.0), "Object Right Ascension in degrees");
+                hdr.write("DEC", (float) dec, "Object Declination in degrees");
+
+                {
+                    int h = (int) ra;
+                    ra -= h;
+                    ra *= 60.0;
+                    int m = (int) ra;
+                    ra -= m;
+                    ra *= 60.0;
+                    hdr.write("OBJCTRA", wxString::Format("%02d %02d %06.3f", h, m, ra).c_str(), "Object Right Ascension in hms");
+                }
+
+                {
+                    int sign = dec < 0.0 ? -1 : +1;
+                    dec *= sign;
+                    int d = (int) dec;
+                    dec -= d;
+                    dec *= 60.0;
+                    int m = (int) dec;
+                    dec -= m;
+                    dec *= 60.0;
+                    hdr.write("OBJCTDEC", wxString::Format("%c%d %02d %06.3f", sign < 0 ? '-' : '+', d, m, dec).c_str(), "Object Declination in dms");
+                }
+            }
+        }
+
+        float sc = (float) pFrame->GetCameraPixelScale();
+        hdr.write("SCALE", sc, "Image scale (arcsec / pixel)");
+        hdr.write("PIXSCALE", sc, "Image scale (arcsec / pixel)");
+        hdr.write("PEDESTAL", (unsigned int) Pedestal, "dark subtraction bias value");
 
         fits_write_pix(fptr, TUSHORT, fpixel, NPixels, ImageData, &status);
 
@@ -334,7 +403,7 @@ bool usImage::Save(const wxString& fname, const wxString& hdrNote) const
 
         bError = status ? true : false;
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
         bError = true;
@@ -410,7 +479,7 @@ bool usImage::Load(const wxString& fname)
             throw ERROR_INFO("error opening file");
         }
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
         bError = true;

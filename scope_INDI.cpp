@@ -78,6 +78,7 @@ void ScopeINDI::ClearStatus()
     SiderealTime_prop = NULL;
     scope_device = NULL;
     scope_port = NULL;
+    pierside_prop = NULL;
     // reset connection status
     ready = false;
     eod_coord = false;
@@ -136,30 +137,32 @@ void ScopeINDI::SetupDialog()
     delete indiDlg;
 }
 
-bool ScopeINDI::Connect() 
+bool ScopeINDI::Connect()
 {
-   // If not configured open the setup dialog
-   if (strcmp(INDIMountName,"INDI Mount")==0) SetupDialog();
+    // If not configured open the setup dialog
+    if (INDIMountName == wxT("INDI Mount")) {
+        SetupDialog();
+    }
     // define server to connect to.
     setServer(INDIhost.mb_str(wxConvUTF8), INDIport);
     // Receive messages only for our mount.
     watchDevice(INDIMountName.mb_str(wxConvUTF8));
     // Connect to server.
-   if (connectServer()) {
-      return !ready;
-   }
-   else {
-      // last chance to fix the setup
-      SetupDialog();
-      setServer(INDIhost.mb_str(wxConvUTF8), INDIport);
-      watchDevice(INDIMountName.mb_str(wxConvUTF8));
-      if (connectServer()) {
-	 return !ready; 
-      }
-      else {
-	 return true;
-      }
-   }
+    if (connectServer()) {
+        return !ready;
+    }
+    else {
+        // last chance to fix the setup
+        SetupDialog();
+        setServer(INDIhost.mb_str(wxConvUTF8), INDIport);
+        watchDevice(INDIMountName.mb_str(wxConvUTF8));
+        if (connectServer()) {
+            return !ready;
+        }
+        else {
+            return true;
+        }
+    }
 }
 
 bool ScopeINDI::Disconnect() 
@@ -243,7 +246,6 @@ void ScopeINDI::newSwitch(ISwitchVectorProperty *svp)
             if (ready) ScopeINDI::Disconnect();
         }
     }
-    
 }
 
 void ScopeINDI::newMessage(INDI::BaseDevice *dp, int messageID)
@@ -323,6 +325,11 @@ void ScopeINDI::newProperty(INDI::Property *property)
        pulseW_prop = IUFindNumber(pulseGuideEW_prop,"TIMED_GUIDE_W");
        pulseE_prop = IUFindNumber(pulseGuideEW_prop,"TIMED_GUIDE_E");
     }
+    else if ((strcmp(PropName, "TELESCOPE_PIER_SIDE") == 0) && Proptype == INDI_SWITCH){
+        pierside_prop = property->getSwitch();
+        piersideEast_prop = IUFindSwitch(pierside_prop,"PIER_EAST");
+        piersideWest_prop = IUFindSwitch(pierside_prop,"PIER_WEST");
+    }
     else if (strcmp(PropName, "DEVICE_PORT") == 0 && Proptype == INDI_TEXT) {    
 	scope_port = property->getText();
     }
@@ -344,7 +351,7 @@ Mount::MOVE_RESULT ScopeINDI::Guide(GUIDE_DIRECTION direction, int duration)
 {
   // guide using timed pulse guide 
     if (pulseGuideNS_prop && pulseGuideEW_prop) {
-    // despite what is sayed in INDI standard properties description, every telescope driver expect the guided time in msec.  
+    // despite what is said in INDI standard properties description, every telescope driver expect the guided time in msec.
     switch (direction) {
         case EAST:
 	    pulseE_prop->value = duration;
@@ -424,28 +431,26 @@ Mount::MOVE_RESULT ScopeINDI::Guide(GUIDE_DIRECTION direction, int duration)
   else return MOVE_ERROR;
 }
 
-double ScopeINDI::GetGuidingDeclination(void)
+double ScopeINDI::GetDeclination(void)
 {
-    double dec;
-    dec = 0;
     if (coord_prop) {
-	INumber *decprop = IUFindNumber(coord_prop,"DEC");
-	if (decprop) {
-	    dec = decprop->value;     // Degrees
-	    if (dec>89) dec = 89;     // avoid crash when dividing by cos(dec) 
-	    if (dec<-89) dec = -89; 
-	    dec = dec * M_PI / 180;  // Radians
-	}
+        INumber *decprop = IUFindNumber(coord_prop,"DEC");
+        if (decprop) {
+            double dec = decprop->value;     // Degrees
+	        if (dec > 89.0) dec = 89.0;     // avoid crash when dividing by cos(dec) 
+            if (dec < -89.0) dec = -89.0; 
+            return radians(dec);
+        }
     }
-    return dec;
+    return UNKNOWN_DECLINATION;
 }
 
 bool   ScopeINDI::GetGuideRates(double *pRAGuideRate, double *pDecGuideRate)
 {
     const double dSiderealSecondPerSec = 0.9973;
-    bool ok;
+    bool err;
     double gra,gdec;
-    ok = true;
+    err = true;
     if (GuideRate_prop) {
 	INumber *ratera = IUFindNumber(GuideRate_prop,"GUIDE_RATE_WE");
 	INumber *ratedec = IUFindNumber(GuideRate_prop,"GUIDE_RATE_NS");
@@ -456,26 +461,25 @@ bool   ScopeINDI::GetGuideRates(double *pRAGuideRate, double *pDecGuideRate)
 	    gdec = gdec * (15.0 * dSiderealSecondPerSec)/3600;  // Degrees/sec
 	    *pRAGuideRate =  gra;
 	    *pDecGuideRate = gdec;
-	    ok = false;
+	    err = false;
 	}
     }
-    return ok;
+    return err;
 }
 
 bool   ScopeINDI::GetCoordinates(double *ra, double *dec, double *siderealTime)
 {
-    bool ok;
-    ok = true;
+    bool err = true;
     if (coord_prop) {
 	INumber *raprop = IUFindNumber(coord_prop,"RA");
 	INumber *decprop = IUFindNumber(coord_prop,"DEC");
 	if (raprop && decprop) {
 	    *ra = raprop->value;   // hours
 	    *dec = decprop->value; // degrees
-	    ok = false;
+	    err = false;
 	}
 	if (SiderealTime_prop) {   // LX200 only
-	    INumber *stprop = IUFindNumber(coord_prop,"LST"); 
+	    INumber *stprop = IUFindNumber(SiderealTime_prop,"LST"); 
 	    if (stprop){
 		*siderealTime = stprop->value;
 	    }
@@ -492,29 +496,33 @@ bool   ScopeINDI::GetCoordinates(double *ra, double *dec, double *siderealTime)
 	   #endif
 	}
     }
-    return ok;
+    return err;
 }
 
 bool   ScopeINDI::GetSiteLatLong(double *latitude, double *longitude)
 {
-    bool ok;
-    ok = true;
+    bool err = true;
     if (GeographicCoord_prop) {
        INumber *latprop = IUFindNumber(GeographicCoord_prop,"LAT");
        INumber *lonprop = IUFindNumber(GeographicCoord_prop,"LONG");
 	if (latprop && lonprop) {
 	    *latitude = latprop->value;
 	    *longitude = lonprop->value;
-	    ok = false;
+	    err = false;
 	}
     }
-    return ok;	
+    return err;
+}
+
+bool   ScopeINDI::CanSlewAsync()
+{
+    // TODO: implement CanSlewAsync
+    return false;
 }
 
 bool   ScopeINDI::SlewToCoordinates(double ra, double dec)
 {
-    bool ok;
-    ok = true;
+    bool err = true;
     if (coord_prop && oncoordset_prop) {
 	setslew_prop->s = ISS_ON;
 	settrack_prop->s = ISS_OFF;
@@ -525,19 +533,63 @@ bool   ScopeINDI::SlewToCoordinates(double ra, double dec)
 	raprop->value = ra;
 	decprop->value = dec;
 	sendNewNumber(coord_prop);
-	ok = false;
+	err = false;
     }
-    return ok;
+    return err;
+}
+
+bool   ScopeINDI::SlewToCoordinatesAsync(double ra, double dec)
+{
+    // TODO: implement SlewToCoordinatesAsync
+    return true; // error
+}
+
+void   ScopeINDI::AbortSlew(void)
+{
+    // TODO: implement AbortSlew
 }
 
 bool   ScopeINDI::Slewing(void)
 {
-    bool ok;
-    ok = true;
-    if (coord_prop) {
-	ok = !(coord_prop->s == IPS_BUSY);
+    return coord_prop && coord_prop->s == IPS_BUSY;
+}
+
+PierSide ScopeINDI::SideOfPier(void)
+{
+    PierSide pierSide = PIER_SIDE_UNKNOWN;
+    
+    try
+    {
+        if (!IsConnected())
+        {
+            throw ERROR_INFO("INDI Scope: cannot get side of pier when not connected");
+        }
+        
+        if (pierside_prop == NULL)
+        {
+            throw THROW_INFO("INDI Scope: not capable of getting side of pier");
+        }
+        else
+        {
+            if (piersideEast_prop->s == ISS_ON) {
+                pierSide = PIER_SIDE_EAST;
+                
+            }
+            if (piersideWest_prop->s == ISS_ON) {
+                pierSide = PIER_SIDE_WEST;
+                
+            }
+        }
     }
-    return ok;
+    
+    catch (const wxString& Msg)
+    {
+        POSSIBLY_UNUSED(Msg);
+    }
+    
+    Debug.Write(wxString::Format("ScopeINDI::SideOfPier() returns %d\n", pierSide));
+    
+    return pierSide;
 }
 
 #endif /* GUIDE_INDI */

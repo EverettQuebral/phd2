@@ -48,6 +48,10 @@ public:
     bool Connect(const wxString& camId);
     bool Disconnect();
     bool ST4PulseGuideScope(int direction, int duration);
+    bool ST4HasNonGuiMove() { return true; }
+    bool HasNonGuiCapture() { return true; }
+    wxByte BitsPerPixel();
+    bool GetDevicePixelSize(double *devPixelSize);
 };
 
 

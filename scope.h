@@ -36,15 +36,6 @@
 #ifndef SCOPE_H_INCLUDED
 #define SCOPE_H_INCLUDED
 
-enum Calibration_Issues
-{
-    CI_None,
-    CI_Steps,
-    CI_Angle,
-    CI_Rates,
-    CI_Different
-};
-
 #define CALIBRATION_RATE_UNCALIBRATED 123e4
 
 class Scope;
@@ -70,6 +61,8 @@ public:
     virtual ~ScopeConfigDialogCtrlSet() {};
     virtual void LoadValues(void);
     virtual void UnloadValues(void);
+    void ResetRAParameterUI();
+    void ResetDecParameterUI();
 };
 
 class Scope : public Mount
@@ -91,9 +84,13 @@ class Scope : public Mount
     int m_recenterDuration;
     PHD_Point m_calibrationInitialLocation;   // initial position of guide star
     PHD_Point m_calibrationStartingLocation;  // position of guide star at start of calibration measurement (after clear backlash etc.)
+    PHD_Point m_calibrationStartingCoords;    // ra,dec coordinates at start of calibration measurement
     PHD_Point m_southStartingLocation;        // Needed to be sure nudging is in south-only direction
     PHD_Point m_lastLocation;
     double m_totalSouthAmt;
+    double m_northDirCosX;
+    double m_northDirCosY;
+
     // backlash-related variables
     PHD_Point m_blMarkerPoint;
     double m_blExpectedBacklashStep;
@@ -101,7 +98,7 @@ class Scope : public Mount
     int m_blAcceptedMoves;
     double m_blDistanceMoved;
     int m_blMaxClearingPulses;
-    enum blConstants { BL_BACKLASH_MIN_COUNT = 3, BL_MAX_CLEARING_TIME = 10000, BL_MIN_CLEARING_DISTANCE = 3 };
+    enum blConstants { BL_BACKLASH_MIN_COUNT = 3, BL_MAX_CLEARING_TIME = 60000, BL_MIN_CLEARING_DISTANCE = 3 };
 
     Calibration m_calibration;
     CalibrationDetails m_calibrationDetails;
@@ -111,9 +108,11 @@ class Scope : public Mount
 
     bool m_calibrationFlipRequiresDecFlip;
     bool m_stopGuidingWhenSlewing;
-    Calibration m_prevCalibrationParams;
+    Calibration m_prevCalibration;
     CalibrationDetails m_prevCalibrationDetails;
-    Calibration_Issues m_lastCalibrationIssue;
+    CalibrationIssueType m_lastCalibrationIssue;
+
+    bool m_useDecCompensation;
 
     enum CALIBRATION_STATE
     {
@@ -125,7 +124,8 @@ class Scope : public Mount
         CALIBRATION_STATE_GO_SOUTH,
         CALIBRATION_STATE_NUDGE_SOUTH,
         CALIBRATION_STATE_COMPLETE
-    } m_calibrationState;
+    };
+    CALIBRATION_STATE m_calibrationState;
 
     // Things related to the Advanced Config Dialog
 protected:
@@ -167,14 +167,14 @@ protected:
 
 public:
 
-    virtual int GetCalibrationDuration(void);
-    virtual bool SetCalibrationDuration(int calibrationDuration);
-    virtual int GetMaxDecDuration(void);
-    virtual bool SetMaxDecDuration(int maxDecDuration);
-    virtual int GetMaxRaDuration(void);
-    virtual bool SetMaxRaDuration(double maxRaDuration);
-    virtual DEC_GUIDE_MODE GetDecGuideMode(void);
-    virtual bool SetDecGuideMode(int decGuideMode);
+    int GetCalibrationDuration(void) const;
+    bool SetCalibrationDuration(int calibrationDuration);
+    int GetMaxDecDuration(void) const;
+    bool SetMaxDecDuration(int maxDecDuration);
+    int GetMaxRaDuration(void) const;
+    bool SetMaxRaDuration(int maxRaDuration);
+    DEC_GUIDE_MODE GetDecGuideMode(void) const;
+    bool SetDecGuideMode(int decGuideMode);
 
     virtual MountConfigDialogPane *GetConfigDialogPane(wxWindow *pParent);
     virtual MountConfigDialogCtrlSet *GetConfigDialogCtrlSet(wxWindow *pParent, Mount *pScope, AdvancedDialog *pAdvancedDialog, BrainCtrlIdMap& CtrlMap);
@@ -192,12 +192,16 @@ public:
     virtual ~Scope(void);
 
     virtual void SetCalibration(const Calibration& cal);
-    virtual void SetCalibrationDetails(const CalibrationDetails& calDetails, double xAngle, double yAngle);
+    virtual void SetCalibrationDetails(const CalibrationDetails& calDetails, double xAngle, double yAngle, double binning);
+    virtual void FlagCalibrationIssue(const CalibrationDetails& calDetails, CalibrationIssueType issue);
     virtual bool IsCalibrated(void);
     virtual bool BeginCalibration(const PHD_Point &currentLocation);
     virtual bool UpdateCalibrationState(const PHD_Point &currentLocation);
-    virtual bool GuidingCeases(void);
+
+    static const double DEC_COMP_LIMIT; // declination compensation limit
     void EnableDecCompensation(bool enable);
+    bool DecCompensationEnabled() const;
+    bool DecCompensationActive(void) const;
 
     virtual bool RequiresCamera(void);
     virtual bool RequiresStepGuider(void);
@@ -208,7 +212,25 @@ public:
     void SetAssumeOrthogonal(bool val);
     bool IsAssumeOrthogonal(void) const;
     void HandleSanityCheckDialog();
-    void SetCalibrationWarning(Calibration_Issues etype, bool val);
+    void SetCalibrationWarning(CalibrationIssueType etype, bool val);
+
+    virtual double GetDeclination(void); // declination in radians, or UNKNOWN_DECLINATION
+    virtual bool GetGuideRates(double *pRAGuideRate, double *pDecGuideRate);
+    virtual bool GetCoordinates(double *ra, double *dec, double *siderealTime);
+    virtual bool GetSiteLatLong(double *latitude, double *longitude);
+    virtual bool CanSlew(void);
+    virtual bool CanSlewAsync(void);
+    virtual bool SlewToCoordinates(double ra, double dec);
+    virtual bool SlewToCoordinatesAsync(double ra, double dec);
+    virtual void AbortSlew(void);
+    virtual bool CanCheckSlewing(void);
+    virtual bool Slewing(void);
+    virtual PierSide SideOfPier(void);
+    virtual bool CanReportPosition(void);  // Can report RA, Dec, side-of-pier, etc.
+    // Will be called before guiding starts, before any call to GetCoordinates, GetDeclination, or SideOfPier.
+    // Does not get called unless guiding was started interactively (by clicking the guide button)
+    virtual bool PreparePositionInteractive(void);
+    virtual bool CanPulseGuide(void);
 
     virtual void StartDecDrift(void);
     virtual void EndDecDrift(void);
@@ -241,6 +263,31 @@ inline bool Scope::IsStopGuidingWhenSlewingEnabled(void) const
 inline bool Scope::IsAssumeOrthogonal(void) const
 {
     return m_assumeOrthogonal;
+}
+
+inline bool Scope::DecCompensationEnabled() const
+{
+    return m_useDecCompensation;
+}
+
+inline int Scope::GetCalibrationDuration(void) const
+{
+    return m_calibrationDuration;
+}
+
+inline int Scope::GetMaxDecDuration(void) const
+{
+    return m_maxDecDuration;
+}
+
+inline int Scope::GetMaxRaDuration(void) const
+{
+    return m_maxRaDuration;
+}
+
+inline DEC_GUIDE_MODE Scope::GetDecGuideMode(void) const
+{
+    return m_decGuideMode;
 }
 
 #endif /* SCOPE_H_INCLUDED */

@@ -51,7 +51,11 @@ class Camera_ASCOMLateClass : public GuideCamera
     wxSize m_maxSize;
     bool m_canAbortExposure;
     bool m_canStopExposure;
-    unsigned short m_curBin;
+    bool m_canSetCoolerTemperature;
+    bool m_canGetCoolerPower;
+    wxByte m_bitsPerPixel;
+    wxByte m_curBin;
+    double m_driverPixelSize;
 
 #endif // __WINDOWS__
 
@@ -70,6 +74,11 @@ public:
     bool    Disconnect(void);
     void    ShowPropertyDialog(void);
     bool    ST4PulseGuideScope(int direction, int duration);
+    wxByte  BitsPerPixel();
+    bool    GetDevicePixelSize(double* devPixelSize);
+    bool    SetCoolerOn(bool on);
+    bool    SetCoolerSetpoint(double temperature);
+    bool    GetCoolerStatus(bool *on, double *setpoint, double *power, double *temperature);
 
 private:
 

@@ -43,6 +43,7 @@ class StepGuider;
 class AOConfigDialogCtrlSet : ConfigDialogCtrlSet
 {
     StepGuider *m_pStepGuider;
+    wxSpinCtrl *m_travel;
     wxSpinCtrl *m_pCalibrationStepsPerIteration;
     wxSpinCtrl *m_pSamplesToAverage;
     wxSpinCtrl *m_pBumpPercentage;
@@ -171,7 +172,7 @@ public:
     static StepGuider *Factory(const wxString& choice);
 
     virtual void SetCalibration(const Calibration& cal);
-    virtual void SetCalibrationDetails(const CalibrationDetails& calDetails, double xAngle, double yAngle);
+    virtual void SetCalibrationDetails(const CalibrationDetails& calDetails, double xAngle, double yAngle, double binning);
     virtual bool BeginCalibration(const PHD_Point& currentLocation);
     bool UpdateCalibrationState(const PHD_Point& currentLocation);
     virtual void ClearCalibration(void);
@@ -179,8 +180,9 @@ public:
     virtual bool Connect(void);
     virtual bool Disconnect(void);
 
-    virtual bool GuidingCeases(void);
-    virtual void ClearHistory(void);
+    virtual void NotifyGuidingStopped(void);
+    virtual void NotifyGuidingResumed(void);
+    virtual void NotifyGuidingDithered(double dx, double dy);
 
     virtual void ShowPropertyDialog(void);
 
@@ -207,6 +209,7 @@ protected:
 private:
     virtual bool Step(GUIDE_DIRECTION direction, int steps) = 0;
     virtual int MaxPosition(GUIDE_DIRECTION direction) const = 0;
+    virtual bool SetMaxPosition(int steps) = 0;
 
     // virtual functions -- these CAN be overridden by a subclass, which should
     // consider whether they need to call the base class functions as part of

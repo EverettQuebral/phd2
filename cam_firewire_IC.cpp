@@ -61,6 +61,11 @@ Camera_FirewireClass::Camera_FirewireClass()
     m_hasGuideOutput = false;
 }
 
+wxByte Camera_FirewireClass::BitsPerPixel()
+{
+    return 8;
+}
+
 //Camera_FirewireClass::~Camera_FirewireClass () {
 //  ;
 //}
@@ -315,7 +320,8 @@ bool Camera_FirewireClass::Capture(int duration, usImage& img, int options, cons
 
     if (err.isError())
     {
-        DisconnectWithAlert(wxString::Format(_("Error capturing image: %d (%d) %s"), (int) err.getVal(), (int) eTIMEOUT_PREMATURLY_ELAPSED, wxString(err.c_str())));
+        DisconnectWithAlert(wxString::Format(_("Error capturing image: %d (%d) %s"),
+            (int) err.getVal(), (int) eTIMEOUT_PREMATURLY_ELAPSED, wxString(err.c_str())), NO_RECONNECT);
         return true;
     }
     imgptr = (unsigned char *) pSink->getLastAcqMemBuffer()->getPtr();

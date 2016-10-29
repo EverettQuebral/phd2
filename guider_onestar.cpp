@@ -209,7 +209,7 @@ bool GuiderOneStar::SetMassChangeThreshold(double massChangeThreshold)
 
         m_massChangeThreshold = massChangeThreshold;
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
 
@@ -240,7 +240,7 @@ bool GuiderOneStar::SetSearchRegion(int searchRegion)
         }
         m_searchRegion = searchRegion;
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
         bError = true;
@@ -280,7 +280,7 @@ bool GuiderOneStar::SetCurrentPosition(usImage *pImage, const PHD_Point& positio
         m_massChecker->Reset();
         bError = !m_star.Find(pImage, m_searchRegion, x, y, pFrame->GetStarFindMode());
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
     }
@@ -336,6 +336,44 @@ static void SaveAutoSelectFailedImg(usImage *pImage)
     pImage->Save(wxFileName(Debug.GetLogDir(), filename).GetFullPath());
 }
 
+static wxString StarStatusStr(const Star& star)
+{
+    if (!star.IsValid())
+        return _("No star selected");
+
+    switch (star.GetError())
+    {
+    case Star::STAR_LOWSNR:        return _("Star lost - low SNR");
+    case Star::STAR_LOWMASS:       return _("Star lost - low mass");
+    case Star::STAR_TOO_NEAR_EDGE: return _("Star too near edge");
+    case Star::STAR_MASSCHANGE:    return _("Star lost - mass changed");
+    default:                       return _("No star found");
+    }
+}
+
+static wxString StarStatus(const Star& star)
+{
+    wxString status = wxString::Format(_("m=%.0f SNR=%.1f"), star.Mass, star.SNR);
+
+    if (star.GetError() == Star::STAR_SATURATED)
+        status += _T(" ") + _("Saturated");
+
+    int exp;
+    bool auto_exp;
+    pFrame->GetExposureInfo(&exp, &auto_exp);
+
+    if (auto_exp)
+    {
+        status += _T(" ");
+        if (exp >= 1)
+            status += wxString::Format(_("Exp=%0.1f s"), (double) exp / 1000.);
+        else
+            status += wxString::Format(_("Exp=%d ms"), exp);
+    }
+
+    return status;
+}
+
 bool GuiderOneStar::AutoSelect(void)
 {
     bool bError = false;
@@ -383,14 +421,16 @@ bool GuiderOneStar::AutoSelect(void)
             // the next exposure to complete. Socket server clients are going to
             // try to start guiding after selecting the star, but guiding will fail
             // to start if state is still STATE_SELECTING
-            Debug.AddLine("AutoSelect: state = %d, call UpdateGuideState", GetState());
+            Debug.Write(wxString::Format("AutoSelect: state = %d, call UpdateGuideState\n", GetState()));
             UpdateGuideState(NULL, false);
         }
 
         UpdateImageDisplay();
+        pFrame->StatusMsg(wxString::Format(_("Auto-selected star at (%.1f, %.1f)"), m_star.X, m_star.Y));
+        pFrame->UpdateStarInfo(m_star.SNR, m_star.GetError() == Star::STAR_SATURATED);
         pFrame->pProfile->UpdateData(pImage, m_star.X, m_star.Y);
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         if (pImage && pImage->ImageData)
         {
@@ -416,8 +456,8 @@ const PHD_Point& GuiderOneStar::CurrentPosition(void)
 
 inline static wxRect SubframeRect(const PHD_Point& pos, int halfwidth)
 {
-    return wxRect(ROUND(pos.X - halfwidth),
-                  ROUND(pos.Y - halfwidth),
+    return wxRect(ROUND(pos.X) - halfwidth,
+                  ROUND(pos.Y) - halfwidth,
                   2 * halfwidth + 1,
                   2 * halfwidth + 1);
 }
@@ -480,9 +520,19 @@ double GuiderOneStar::StarMass(void)
     return m_star.Mass;
 }
 
+unsigned int GuiderOneStar::StarPeakADU(void)
+{
+    return m_star.IsValid() ? m_star.PeakVal : 0;
+}
+
 double GuiderOneStar::SNR(void)
 {
     return m_star.SNR;
+}
+
+double GuiderOneStar::HFD(void)
+{
+    return m_star.HFD;
 }
 
 int GuiderOneStar::StarError(void)
@@ -497,21 +547,6 @@ void GuiderOneStar::InvalidateCurrentPosition(bool fullReset)
     if (fullReset)
     {
         m_star.X = m_star.Y = 0.0;
-    }
-}
-
-static wxString StarStatusStr(const Star& star)
-{
-    if (!star.IsValid())
-        return _("No star selected");
-
-    switch (star.GetError())
-    {
-    case Star::STAR_LOWSNR:        return _("Star lost - low SNR");
-    case Star::STAR_LOWMASS:       return _("Star lost - low mass");
-    case Star::STAR_TOO_NEAR_EDGE: return _("Star too near edge");
-    case Star::STAR_MASSCHANGE:    return _("Star lost - mass changed");
-    default:                       return _("No star found");
     }
 }
 
@@ -556,7 +591,7 @@ bool GuiderOneStar::UpdateCurrentPosition(usImage *pImage, FrameDroppedInfo *err
             errorInfo->starMass = newStar.Mass;
             errorInfo->starSNR = newStar.SNR;
             errorInfo->status = StarStatusStr(m_star);
-            pFrame->SetStatusText(wxString::Format(_("Mass: %.0f vs %.0f"), newStar.Mass, limits[1]), 1);
+            pFrame->StatusMsg(wxString::Format(_("Mass: %.0f vs %.0f"), newStar.Mass, limits[1]));
             Debug.Write(wxString::Format("UpdateGuideState(): star mass new=%.1f exp=%.1f thresh=%.0f%% range=(%.1f, %.1f)\n", newStar.Mass, limits[1], m_massChangeThreshold * 100, limits[0], limits[2]));
             m_massChecker->AppendData(newStar.Mass);
             throw THROW_INFO("massChangeThreshold error");
@@ -576,20 +611,10 @@ bool GuiderOneStar::UpdateCurrentPosition(usImage *pImage, FrameDroppedInfo *err
         pFrame->pProfile->UpdateData(pImage, m_star.X, m_star.Y);
 
         pFrame->AdjustAutoExposure(m_star.SNR);
-        int exp;
-        bool auto_exp;
-        pFrame->GetExposureInfo(&exp, &auto_exp);
-        if (auto_exp)
-        {
-            if (exp >= 1)
-                errorInfo->status.Printf(_T("m=%.0f SNR=%.1f Exp=%0.1f s"), m_star.Mass, m_star.SNR, (double) exp / 1000.);
-            else
-                errorInfo->status.Printf(_T("m=%.0f SNR=%.1f Exp=%d ms"), m_star.Mass, m_star.SNR, exp);
-        }
-        else
-            errorInfo->status.Printf(_T("m=%.0f SNR=%.1f"), m_star.Mass, m_star.SNR);
+        pFrame->UpdateStarInfo(m_star.SNR, m_star.GetError() == Star::STAR_SATURATED);
+        errorInfo->status = StarStatus(m_star);
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
         bError = true;
@@ -663,13 +688,13 @@ void GuiderOneStar::OnLClick(wxMouseEvent &mevent)
 
             if (!m_star.IsValid())
             {
-                pFrame->SetStatusText(wxString::Format(_("No star found")));
+                pFrame->StatusMsg(wxString::Format(_("No star found")));
             }
             else
             {
                 SetLockPosition(m_star);
-                pFrame->SetStatusText(wxString::Format(_("Selected star at (%.1f, %.1f)"), m_star.X, m_star.Y), 1);
-                pFrame->SetStatusText(wxString::Format(_T("m=%.0f SNR=%.1f"), m_star.Mass, m_star.SNR));
+                pFrame->StatusMsg(wxString::Format(_("Selected star at (%.1f, %.1f)"), m_star.X, m_star.Y));
+                pFrame->UpdateStarInfo(m_star.SNR, m_star.GetError() == Star::STAR_SATURATED);
                 EvtServer.NotifyStarSelected(CurrentPosition());
                 SetState(STATE_SELECTED);
                 pFrame->UpdateButtonsStatus();
@@ -680,13 +705,13 @@ void GuiderOneStar::OnLClick(wxMouseEvent &mevent)
             Update();
         }
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
     }
 }
 
-inline static void DrawBox(wxClientDC& dc, const PHD_Point& star, int halfW, double scale)
+inline static void DrawBox(wxDC& dc, const PHD_Point& star, int halfW, double scale)
 {
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
     double w = ROUND((halfW * 2 + 1) * scale);
@@ -696,8 +721,7 @@ inline static void DrawBox(wxClientDC& dc, const PHD_Point& star, int halfW, dou
 // Define the repainting behaviour
 void GuiderOneStar::OnPaint(wxPaintEvent& event)
 {
-    //wxAutoBufferedPaintDC dc(this);
-    wxClientDC dc(this);
+    wxAutoBufferedPaintDC dc(this);
     wxMemoryDC memDC;
 
     try
@@ -772,11 +796,11 @@ void GuiderOneStar::OnPaint(wxPaintEvent& event)
                 tmpMdc.SelectObject(SubBmp);
                 memDC.SetPen(wxPen(wxColor(0,255,0),1,wxDOT));
                 memDC.DrawLine(0, LockY * m_scaleFactor, XWinSize, LockY * m_scaleFactor);
-                memDC.DrawLine(LockX*m_scaleFactor, 0, LockX*m_scaleFactor, YWinSize);
+                memDC.DrawLine(LockX * m_scaleFactor, 0, LockX * m_scaleFactor, YWinSize);
     #ifdef __APPLEX__
                 tmpMdc.Blit(0,0,60,60,&memDC,ROUND(m_star.X*m_scaleFactor)-30,Displayed_Image->GetHeight() - ROUND(m_star.Y*m_scaleFactor)-30,wxCOPY,false);
     #else
-                tmpMdc.Blit(0,0,60,60,&memDC,ROUND(m_star.X*m_scaleFactor)-30,ROUND(m_star.Y*m_scaleFactor)-30,wxCOPY,false);
+                tmpMdc.Blit(0,0,60,60,&memDC,ROUND(m_star.X * m_scaleFactor) - 30,ROUND(m_star.Y * m_scaleFactor) - 30,wxCOPY,false);
     #endif
                 //          tmpMdc.Blit(0,0,200,200,&Cdc,0,0,wxCOPY);
 
@@ -793,7 +817,7 @@ void GuiderOneStar::OnPaint(wxPaintEvent& event)
             }
         }
     }
-    catch (wxString Msg)
+    catch (const wxString& Msg)
     {
         POSSIBLY_UNUSED(Msg);
     }
@@ -839,10 +863,8 @@ void GuiderOneStar::SaveStarFITS()
     {
         fits_create_img(fptr,output_format, 2, fsize, &status);
 
-        time_t now;
-        struct tm *timestruct;
-        time(&now);
-        timestruct=gmtime(&now);
+        time_t now = wxDateTime::GetTimeNow();
+        struct tm *timestruct = gmtime(&now);
         sprintf(keyname,"DATE");
         sprintf(keycomment,"UTC date that FITS file was created");
         sprintf(keystring,"%.4d-%.2d-%.2d %.2d:%.2d:%.2d",timestruct->tm_year+1900,timestruct->tm_mon+1,timestruct->tm_mday,timestruct->tm_hour,timestruct->tm_min,timestruct->tm_sec);
@@ -924,8 +946,8 @@ GuiderOneStarConfigDialogCtrlSet::GuiderOneStarConfigDialogCtrlSet(wxWindow *pPa
     int width;
 
     width = StringWidth(_T("0000"));
-    m_pSearchRegion = new wxSpinCtrl(GetParentWindow(AD_szStarTracking), wxID_ANY, _T("foo2"), wxPoint(-1, -1),
-        wxSize(width + 30, -1), wxSP_ARROW_KEYS, MIN_SEARCH_REGION, MAX_SEARCH_REGION, DEFAULT_SEARCH_REGION, _T("Search"));
+    m_pSearchRegion = pFrame->MakeSpinCtrl(GetParentWindow(AD_szStarTracking), wxID_ANY, _T(" "), wxDefaultPosition,
+        wxSize(width, -1), wxSP_ARROW_KEYS, MIN_SEARCH_REGION, MAX_SEARCH_REGION, DEFAULT_SEARCH_REGION, _T("Search"));
     wxSizer *pSearchRegion = MakeLabeledControl(AD_szStarTracking, _("Search region (pixels)"), m_pSearchRegion,
         _("How many pixels (up/down/left/right) do we examine to find the star? Default = 15"));
 
@@ -937,8 +959,8 @@ GuiderOneStarConfigDialogCtrlSet::GuiderOneStarConfigDialogCtrlSet(wxWindow *pPa
     GetParentWindow(AD_szStarTracking)->Bind(wxEVT_COMMAND_CHECKBOX_CLICKED, &GuiderOneStarConfigDialogCtrlSet::OnStarMassEnableChecked, this, STAR_MASS_ENABLE);
 
     width = StringWidth(_T("100.0"));
-    m_pMassChangeThreshold = new wxSpinCtrlDouble(pParent, wxID_ANY, _T("foo2"), wxPoint(-1, -1),
-        wxSize(width + 30, -1), wxSP_ARROW_KEYS, 0.1, 100.0, 0.0, 1.0, _T("MassChangeThreshold"));
+    m_pMassChangeThreshold = pFrame->MakeSpinCtrlDouble(pParent, wxID_ANY, _T(" "), wxDefaultPosition,
+        wxSize(width, -1), wxSP_ARROW_KEYS, 0.1, 100.0, 0.0, 1.0, _T("MassChangeThreshold"));
     m_pMassChangeThreshold->SetDigits(1);
     wxSizer *pTolerance = MakeLabeledControl(AD_szStarTracking, _("Tolerance"), m_pMassChangeThreshold,
         _("When star mass change detection is enabled, this is the tolerance for star mass changes between frames, in percent. "
